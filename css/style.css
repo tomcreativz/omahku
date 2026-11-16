@@ -186,6 +186,18 @@ input[type=checkbox]:checked::after{content:"✓";font-weight:700;font-size:18px
 .steps{border:2.5px solid var(--ink);border-radius:10px;background:#FFFBEA;padding:.45rem .7rem}
 .steps summary{cursor:pointer;font-weight:700}
 .steps ol{margin:.55rem 0 .2rem 1.25rem;display:flex;flex-direction:column;gap:.4rem;font-size:.95rem;overflow-wrap:anywhere}
+.card .meta .chip{white-space:normal}
+.vitals{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:.55rem}
+.vital{display:flex;flex-direction:column;align-items:flex-start;gap:.15rem;padding:.5rem .65rem;border:2.5px solid var(--ink);border-radius:10px;background:#fff;box-shadow:2px 2px 0 var(--ink);min-width:0}
+.vital small{font-size:.74rem;font-weight:700;color:#444}
+.vital b{font-size:1.3rem;line-height:1.1;overflow-wrap:anywhere}
+.vital .sub{font-weight:500;color:#555;font-size:.72rem;line-height:1.25}
+.charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:1rem;margin-bottom:1.2rem}
+.chart{padding:.7rem .8rem;display:flex;flex-direction:column;gap:.4rem;background:#fff}
+.chart-h{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.chart-leg{display:flex;gap:.9rem;font-size:.8rem;font-weight:700}
+.chart-leg i{display:inline-block;width:12px;height:12px;border:2px solid var(--ink);border-radius:50%;margin-right:.3rem;vertical-align:-1px}
+.disc{font-size:.82rem;color:var(--muted);margin:1.2rem 0 0}
 .menu-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:.8rem}
 .menu-grid a{display:flex;flex-direction:column;align-items:center;gap:.3rem;padding:.9rem .4rem;text-decoration:none;font-weight:700;
   border:var(--bw) solid var(--ink);border-radius:var(--r);box-shadow:var(--sh-sm);text-align:center}
