@@ -2,6 +2,7 @@
 import { h, chip, modal, confirmBox, toast, emptyState, today, addDays, addMonths, daysBetween, fmtDate, fmtShort, hhmm, relDay, waNumber } from "./ui.js";
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
 import { openAIAdvisor, completeRecipe } from "./ai.js";
+import { healthView } from "./health.js";
 
 export async function run(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg, "ok"); return true; }
@@ -41,7 +42,7 @@ export function openForm(mod, row = null, prefill = {}) {
       input = h("select", { id }, opts.map(([ov, ol]) => h("option", { value: ov }, ol)));
     } else if (f.type === "range") input = h("input", { id, type: "range", min: 0, max: 100, step: 5 });
     else if (f.type === "person") {
-      const names = new Set([...state.members.map((m) => m.display_name), ...state.data.health_records.map((r) => r.person)]);
+      const names = new Set([...state.members.map((m) => m.display_name), ...state.data.health_records.map((r) => r.person), ...state.data.health_profiles.map((r) => r.person), ...state.data.health_metrics.map((r) => r.person)]);
       const dl = h("datalist", { id: id + "_dl" }, [...names].map((n) => h("option", { value: n })));
       input = h("input", { id, type: "text", list: id + "_dl", placeholder: f.placeholder || "", autocomplete: "off" });
       inputs[f.k + "_dl"] = dl;
@@ -80,6 +81,8 @@ export function openForm(mod, row = null, prefill = {}) {
       } else if (v === "" && ["date", "time", "member", "select", "tel", "text", "textarea"].includes(f.type || "text")) v = f.required ? v : null;
       out[f.k] = v;
     }
+    const bad = mod.validate?.(out);
+    if (bad) { err.textContent = bad; err.hidden = false; return; }
     mod.beforeSave?.(out);
     submit.disabled = true;
     const ok = await run(() => (isEdit ? updateRow(mod.table, row.id, out) : insertRow(mod.table, out)), isEdit ? "Tersimpan ✓" : "Ditambahkan ✓");
@@ -444,6 +447,7 @@ export const MODULES = [
   // ---------------- Riwayat kesehatan ----------------
   {
     key: "health", table: "health_records", title: "Riwayat Kesehatan", nav: "Kesehatan", singular: "Catatan kesehatan", icon: "🩺", color: "green",
+    view: (root) => healthView(root, { renderModule, openForm, run, recMod: modByKey.health }),
     emptyTitle: "Belum ada catatan kesehatan", emptyText: "Catat alergi, obat rutin, vaksin, kunjungan dokter, dan hasil lab tiap anggota keluarga.",
     fields: [
       { k: "person", label: "Untuk siapa", type: "person", required: true, placeholder: "mis. Budi, Sari, Adik", default: () => meMember()?.display_name },
