@@ -183,6 +183,9 @@ input[type=checkbox]:checked::after{content:"✓";font-weight:700;font-size:18px
   .auth .wrap{grid-template-columns:1fr}
   .auth .pitch p{max-width:none}
 }
+.steps{border:2.5px solid var(--ink);border-radius:10px;background:#FFFBEA;padding:.45rem .7rem}
+.steps summary{cursor:pointer;font-weight:700}
+.steps ol{margin:.55rem 0 .2rem 1.25rem;display:flex;flex-direction:column;gap:.4rem;font-size:.95rem;overflow-wrap:anywhere}
 .menu-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:.8rem}
 .menu-grid a{display:flex;flex-direction:column;align-items:center;gap:.3rem;padding:.9rem .4rem;text-decoration:none;font-weight:700;
   border:var(--bw) solid var(--ink);border-radius:var(--r);box-shadow:var(--sh-sm);text-align:center}
