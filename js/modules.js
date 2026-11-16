@@ -1,6 +1,7 @@
 // Definisi modul + tampilan daftar generik.
 import { h, chip, modal, confirmBox, toast, emptyState, today, addDays, addMonths, daysBetween, fmtDate, fmtShort, hhmm, relDay, waNumber } from "./ui.js";
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
+import { openAIAdvisor, completeRecipe } from "./ai.js";
 
 export async function run(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg, "ok"); return true; }
@@ -311,18 +312,34 @@ export const MODULES = [
       { k: "date", label: "Tanggal", type: "date", required: true, half: true, default: today },
       { k: "meal", label: "Waktu makan", type: "select", options: MEALS, half: true, default: "Makan siang" },
       { k: "ingredients", label: "Bahan", type: "textarea", placeholder: "Satu bahan per baris:\nAyam 1/2 kg\nWortel", hint: "Bisa dikirim ke Daftar Belanja sekali klik." },
+      { k: "steps", label: "Cara memasak", type: "textarea", placeholder: "Satu langkah per baris", hint: "Bisa diisi otomatis lewat tombol ✨ Resep AI di kartu menu." },
       { k: "notes", label: "Catatan", type: "textarea" },
     ],
+    top: (root) => {
+      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "#F1E8FF" } },
+        h("h3", null, "✨ Bingung mau masak apa?"),
+        h("div", { class: "body" },
+          h("p", { style: { fontSize: ".95rem" } }, "Minta AI membuatkan resep lengkap dengan bahan dan cara memasak. Hasilnya bisa langsung masuk ke Menu dan Daftar Belanja."),
+          h("div", null, h("button", { class: "btn lilac", type: "button", onclick: () => openAIAdvisor({ addToShopping }) }, "✨ Saran AI")))));
+    },
     filters: () => [[{ id: "up", label: "Mulai hari ini", test: (r) => r.date >= today() }, { id: "past", label: "Sebelumnya", test: (r) => r.date < today() }, { id: "all", label: "Semua" }]],
     sort: by((r) => r.date, (r) => MEALS.indexOf(r.meal)),
     groupBy: (r) => `${relDay(r.date) === "Hari ini" || relDay(r.date) === "Besok" ? relDay(r.date) + " · " : ""}${fmtDate(r.date)}`,
     card: (r) => {
       const items = splitItems(r.ingredients);
+      const steps = (r.steps || "").split("\n").map((x) => x.trim().replace(/^\d+\s*[.)]\s*/, "")).filter(Boolean);
       return {
         title: r.dish, color: "pink",
-        meta: [r.meal ? chip(r.meal, "pink") : null],
-        body: [items.length ? h("div", { class: "note" }, "🧂 " + items.join(", ")) : null, r.notes ? h("div", { class: "note" }, r.notes) : null],
-        actions: items.length ? [h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(items.map((n) => ({ name: n }))) }, "🛒 Bahan ke belanja")] : [],
+        meta: [r.meal ? chip(r.meal, "pink") : null, r.ai ? chip("✨ AI", "lilac") : null],
+        body: [
+          items.length ? h("div", { class: "note" }, "🧂 " + items.join(", ")) : null,
+          steps.length ? h("details", { class: "steps" }, h("summary", null, `👩‍🍳 Cara memasak (${steps.length} langkah)`), h("ol", null, steps.map((x) => h("li", null, x)))) : null,
+          r.notes ? h("div", { class: "note" }, r.notes) : null,
+        ],
+        actions: [
+          items.length ? h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(items.map((n) => ({ name: n }))) }, "🛒 Bahan ke belanja") : null,
+          !steps.length ? h("button", { class: "btn sm lilac", type: "button", onclick: (e) => completeRecipe(r, { addToShopping }, e.currentTarget) }, "✨ Resep AI") : null,
+        ],
       };
     },
   },
