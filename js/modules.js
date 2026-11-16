@@ -3,6 +3,7 @@ import { h, chip, modal, confirmBox, toast, emptyState, today, addDays, addMonth
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
 import { openAIAdvisor, completeRecipe } from "./ai.js";
 import { healthView } from "./health.js";
+import { assetModule } from "./assets.js";
 
 export async function run(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg, "ok"); return true; }
@@ -85,7 +86,7 @@ export function openForm(mod, row = null, prefill = {}) {
     if (bad) { err.textContent = bad; err.hidden = false; return; }
     mod.beforeSave?.(out);
     submit.disabled = true;
-    const ok = await run(() => (isEdit ? updateRow(mod.table, row.id, out) : insertRow(mod.table, out)), isEdit ? "Tersimpan ✓" : "Ditambahkan ✓");
+    const ok = await run(async () => { await (isEdit ? updateRow(mod.table, row.id, out) : insertRow(mod.table, out)); await mod.afterSave?.(out, row); }, isEdit ? "Tersimpan ✓" : "Ditambahkan ✓");
     submit.disabled = false;
     if (ok) close();
   });
@@ -112,7 +113,7 @@ export function renderModule(mod, root) {
 
   const api = {
     edit: (r) => openForm(mod, r),
-    remove: async (r) => { if (await confirmBox(`Hapus “${r[mod.titleField || "title"] || r.name || r.dish}”?`)) run(() => deleteRow(mod.table, r.id), "Dihapus"); },
+    remove: async (r) => { if (await confirmBox(`Hapus “${r[mod.titleField || "title"] || r.name || r.dish}”?`)) run(async () => { await deleteRow(mod.table, r.id); await mod.afterRemove?.(r); }, "Dihapus"); },
     patch: (r, p, msg) => run(() => updateRow(mod.table, r.id, p), msg),
   };
 
@@ -169,6 +170,7 @@ const dueChip = (date, done) => {
   const n = daysBetween(today(), date);
   return chip(`${fmtShort(date)} · ${relDay(date)}`, done ? "" : n < 0 ? "red" : n === 0 ? "orange" : "");
 };
+const expDays = (r) => (r.expiry_date ? daysBetween(today(), r.expiry_date) : null);
 const who = (v) => (memberName(v) ? chip("👤 " + memberName(v), "lilac") : null);
 
 // ============================================================
@@ -279,29 +281,43 @@ export const MODULES = [
   // ---------------- Stok ----------------
   {
     key: "stock", table: "stock_items", title: "Stok Kebutuhan", nav: "Stok", singular: "Stok", icon: "📦", color: "lilac", titleField: "name",
-    emptyTitle: "Belum ada stok", emptyText: "Catat kebutuhan rutin (beras, sabun, popok…) dan tandai batas minimumnya.",
+    emptyTitle: "Belum ada stok", emptyText: "Catat kebutuhan rutin (beras, sabun, popok…), tandai batas minimumnya, dan isi tanggal kedaluwarsa agar tidak terlewat.",
     fields: [
-      { k: "name", label: "Nama barang", required: true, placeholder: "mis. Sabun cuci piring" },
+      { k: "name", label: "Nama barang", required: true, placeholder: "mis. Susu UHT" },
       { k: "qty", label: "Jumlah sekarang", type: "number", required: true, half: true, default: 1, min: 0 },
       { k: "min_qty", label: "Batas menipis", type: "number", half: true, default: 1, min: 0, hint: "Tandai menipis jika ≤ angka ini" },
       { k: "unit", label: "Satuan", placeholder: "pcs, kg, liter…", half: true },
-      { k: "category", label: "Kategori", type: "select", options: ["Dapur", "Kebersihan", "Mandi & perawatan", "Bayi & anak", "Obat", "Lainnya"], half: true, default: "Dapur" },
+      { k: "category", label: "Kategori", type: "select", options: ["Makanan & minuman", "Dapur", "Kebersihan", "Mandi & perawatan", "Bayi & anak", "Obat", "Lainnya"], half: true, default: "Makanan & minuman" },
+      { k: "expiry_date", label: "Tanggal kedaluwarsa", type: "date", hint: "Kosongkan jika tidak ada. Jika ada beberapa kemasan, isi yang paling cepat kedaluwarsa." },
     ],
     beforeSave: (o) => { o.qty ??= 0; o.min_qty ??= 0; },
-    filters: () => [[{ id: "all", label: "Semua" }, { id: "low", label: "⚠ Menipis", test: (r) => Number(r.qty) <= Number(r.min_qty) }]],
-    sort: by((r) => (Number(r.qty) <= Number(r.min_qty) ? 0 : 1), (r) => (r.name || "").toLowerCase()),
+    filters: () => [[
+      { id: "all", label: "Semua" },
+      { id: "low", label: "⚠ Menipis", test: (r) => Number(r.qty) <= Number(r.min_qty) },
+      { id: "exp", label: "⏰ Kedaluwarsa ≤ 14 hari", test: (r) => expDays(r) != null && expDays(r) <= 14 },
+    ]],
+    sort: by((r) => { const d = expDays(r); return d != null && d < 0 ? 0 : d != null && d <= 14 ? 1 : Number(r.qty) <= Number(r.min_qty) ? 2 : 3; }, (r) => r.expiry_date || BIG, (r) => (r.name || "").toLowerCase()),
     card: (r, api) => {
-      const low = Number(r.qty) <= Number(r.min_qty);
-      const step = (d) => api.patch(r, { qty: Math.max(0, Number(r.qty) + d) });
+      const low = Number(r.qty) <= Number(r.min_qty), d = expDays(r), expired = d != null && d < 0;
+      const step = (n) => api.patch(r, { qty: Math.max(0, Number(r.qty) + n) });
+      const expChip = d == null ? null : expired ? chip(`⛔ Kedaluwarsa ${-d} hari lalu`, "red") : d === 0 ? chip("⚠ Kedaluwarsa hari ini", "red")
+        : chip(`⏰ Exp ${fmtShort(r.expiry_date)} · ${relDay(r.expiry_date)}`, d <= 7 ? "orange" : d <= 30 ? "yellow" : "green");
       return {
-        title: r.name, color: low ? "red" : "lilac",
-        meta: [low ? chip("⚠ Menipis", "red") : chip("Aman", "green"), r.category ? chip(r.category, "lilac") : null],
-        body: h("div", { class: "sos" },
-          h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Kurangi", onclick: () => step(-1) }, "−"),
-          h("b", { style: { fontSize: "1.6rem", minWidth: "3ch", textAlign: "center" } }, String(Number(r.qty))),
-          h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Tambah", onclick: () => step(1) }, "＋"),
-          h("span", null, r.unit || "")),
-        actions: low ? [h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping([{ name: r.name }]) }, "🛒 Ke belanja")] : [],
+        title: r.name, color: expired ? "red" : low ? "red" : "lilac",
+        meta: [expired ? null : low ? chip("⚠ Menipis", "red") : chip("Aman", "green"), expChip, r.category ? chip(r.category, "lilac") : null],
+        body: [
+          h("div", { class: "sos" },
+            h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Kurangi", onclick: () => step(-1) }, "−"),
+            h("b", { style: { fontSize: "1.6rem", minWidth: "3ch", textAlign: "center" } }, String(Number(r.qty))),
+            h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Tambah", onclick: () => step(1) }, "＋"),
+            h("span", null, r.unit || "")),
+          expired ? h("div", { class: "note", style: { fontWeight: 700 } }, "⛔ Sudah kedaluwarsa. Jangan dikonsumsi atau dipakai lagi. Buang lalu beli yang baru.")
+            : d != null && d <= 3 ? h("div", { class: "note", style: { fontWeight: 700 } }, "⚠ Segera gunakan sebelum kedaluwarsa.") : null,
+        ],
+        actions: [
+          expired ? h("button", { class: "btn sm red", type: "button", onclick: () => api.patch(r, { qty: 0, expiry_date: null }, "Dicatat sudah dibuang 🗑") }, "🗑 Sudah dibuang") : null,
+          low || expired ? h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping([{ name: r.name }]) }, "🛒 Ke belanja") : null,
+        ],
       };
     },
   },
@@ -375,6 +391,9 @@ export const MODULES = [
       };
     },
   },
+
+  // ---------------- Aset ----------------
+  assetModule({ openForm, run }),
 
   // ---------------- Target ----------------
   {

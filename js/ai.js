@@ -114,6 +114,48 @@ const ingLine = (i) => (i.qty ? `${i.name} ${i.qty}` : i.name);
 const stepsText = (steps) => steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
 const notesText = (r) => [r.info, r.tip ? "💡 " + r.tip : ""].filter(Boolean).join("\n");
 
+// Formulir isi API key (dipakai di jendela Saran Menu dan jendela fitur AI lainnya).
+function keyForm({ onDone, onCancel, onDeleted }) {
+  const ai = getAI();
+  const key = h("input", { id: "ai_key", type: "password", placeholder: "sk-or-v1-…", autocomplete: "off", spellcheck: "false", value: ai.key });
+  const mdl = h("input", { id: "ai_model", type: "text", list: "ai_models", autocomplete: "off", spellcheck: "false", value: ai.model });
+  const err = h("div", { class: "msg err", hidden: true });
+  const save = () => {
+    const k = key.value.trim(), m = mdl.value.trim() || DEFAULT_MODEL;
+    if (!k) { err.textContent = "API key wajib diisi."; err.hidden = false; key.focus(); return; }
+    if (!saveAI({ key: k, model: m })) { err.textContent = "Browser menolak menyimpan. Matikan mode privat lalu coba lagi."; err.hidden = false; return; }
+    toast("API key tersimpan ✓", "ok"); onDone();
+  };
+  return h("form", { novalidate: true, onsubmit: (e) => { e.preventDefault(); save(); } },
+    h("div", { class: "msg" }, "Isi API key OpenRouter Anda sendiri. Key hanya disimpan di perangkat ini, tidak masuk ke data keluarga dan tidak terlihat oleh pasangan."),
+    err,
+    h("div", { class: "field" }, h("label", { for: "ai_key" }, "API key OpenRouter"), key,
+      h("div", { class: "hint" }, "Buat di ", h("a", { href: "https://openrouter.ai/settings/keys", target: "_blank", rel: "noopener" }, "openrouter.ai/settings/keys"), ". Disarankan pasang batas penggunaan (credit limit) pada key.")),
+    h("div", { class: "field" }, h("label", { for: "ai_model" }, "Model"), mdl,
+      h("datalist", { id: "ai_models" }, [DEFAULT_MODEL, "openrouter/auto", "openai/gpt-4o-mini"].map((m) => h("option", { value: m }))),
+      h("div", { class: "hint" }, "Biarkan openrouter/free untuk model gratis. Daftar model lain di openrouter.ai/models.")),
+    h("div", { class: "foot" },
+      ai.key ? h("button", { class: "btn white", type: "button", onclick: () => { saveAI({ key: "", model: ai.model }); toast("API key dihapus"); onDeleted?.(); } }, "Hapus key") : null,
+      ai.key && onCancel ? h("button", { class: "btn white", type: "button", onclick: onCancel }, "Batal") : null,
+      h("button", { class: "btn pink", type: "submit" }, "Simpan")));
+}
+
+// Pastikan API key ada. Jika belum, buka jendela isi key. Mengembalikan true bila siap dipakai.
+export function ensureAIKey() {
+  return new Promise((resolve) => {
+    if (getAI().key) return resolve(true);
+    let done = false, close = () => {};
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    close = modal("🔑 API key OpenRouter", keyForm({ onDone: () => { finish(true); close(); } }), { onClose: () => finish(false) });
+  });
+}
+
+// Minta AI menjawab dalam bentuk JSON (dipakai fitur lain, mis. saran servis).
+export async function askAIJSON(system, user) {
+  return parseJSON(await callAI([{ role: "system", content: system }, { role: "user", content: user }]));
+}
+export { str as aiStr, num as aiNum };
+
 // ============================================================
 // Jendela "Saran AI"
 // ============================================================
@@ -132,27 +174,11 @@ export function openAIAdvisor({ addToShopping }) {
         h("div", { class: "grow" }, "🔑 API key tersimpan ", h("b", null, maskKey(ai.key)), h("small", null, "Model: " + ai.model)),
         h("button", { class: "btn sm white", type: "button", onclick: () => { showSettings = true; render(); } }, "Ubah"));
     }
-    const key = h("input", { id: "ai_key", type: "password", placeholder: "sk-or-v1-…", autocomplete: "off", spellcheck: "false", value: ai.key });
-    const mdl = h("input", { id: "ai_model", type: "text", list: "ai_models", autocomplete: "off", spellcheck: "false", value: ai.model });
-    const err = h("div", { class: "msg err", hidden: true });
-    const save = () => {
-      const k = key.value.trim(), m = mdl.value.trim() || DEFAULT_MODEL;
-      if (!k) { err.textContent = "API key wajib diisi."; err.hidden = false; key.focus(); return; }
-      if (!saveAI({ key: k, model: m })) { err.textContent = "Browser menolak menyimpan. Matikan mode privat lalu coba lagi."; err.hidden = false; return; }
-      showSettings = false; toast("API key tersimpan ✓", "ok"); render();
-    };
-    return h("form", { novalidate: true, onsubmit: (e) => { e.preventDefault(); save(); } },
-      h("div", { class: "msg" }, "Isi API key OpenRouter Anda sendiri. Key hanya disimpan di perangkat ini, tidak masuk ke data keluarga dan tidak terlihat oleh pasangan."),
-      err,
-      h("div", { class: "field" }, h("label", { for: "ai_key" }, "API key OpenRouter"), key,
-        h("div", { class: "hint" }, "Buat di ", h("a", { href: "https://openrouter.ai/settings/keys", target: "_blank", rel: "noopener" }, "openrouter.ai/settings/keys"), ". Disarankan pasang batas penggunaan (credit limit) pada key.")),
-      h("div", { class: "field" }, h("label", { for: "ai_model" }, "Model"), mdl,
-        h("datalist", { id: "ai_models" }, [DEFAULT_MODEL, "openrouter/auto", "openai/gpt-4o-mini"].map((m) => h("option", { value: m }))),
-        h("div", { class: "hint" }, "Biarkan openrouter/free untuk model gratis. Daftar model lain di openrouter.ai/models.")),
-      h("div", { class: "foot" },
-        ai.key ? h("button", { class: "btn white", type: "button", onclick: () => { saveAI({ key: "", model: ai.model }); showSettings = true; toast("API key dihapus"); render(); } }, "Hapus key") : null,
-        ai.key ? h("button", { class: "btn white", type: "button", onclick: () => { showSettings = false; render(); } }, "Batal") : null,
-        h("button", { class: "btn pink", type: "submit" }, "Simpan")));
+    return keyForm({
+      onDone: () => { showSettings = false; render(); },
+      onCancel: () => { showSettings = false; render(); },
+      onDeleted: () => { showSettings = true; render(); },
+    });
   }
 
   // ----- Form permintaan + hasil -----

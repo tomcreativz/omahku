@@ -3,6 +3,7 @@ import { CONFIG } from "./config.js";
 import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, relDay } from "./ui.js";
 import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
+import { assetAlerts } from "./assets.js";
 
 const link = (to, text, cls = "btn sm white") => h("a", { class: cls, href: "#/" + to }, text);
 const panel = (title, color, to, ...body) =>
@@ -21,6 +22,8 @@ export function renderDashboard(root) {
   const tasksOpen = D.tasks.filter((r) => r.status !== "done");
   const tasksMine = tasksOpen.filter((r) => r.assignee === me?.user_id || r.assignee === "both");
   const low = D.stock_items.filter((r) => Number(r.qty) <= Number(r.min_qty));
+  const expiring = D.stock_items.filter((r) => r.expiry_date && daysBetween(t, r.expiry_date) <= 14).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
+  const alerts = assetAlerts(t);
   const maint = D.maintenance.map((r) => ({ r, n: nextDue(r) })).filter((x) => x.n && daysBetween(t, x.n) <= 14).sort((a, b) => a.n.localeCompare(b.n));
   const goals = D.goals.filter((g) => progressOf(g) < 100).sort((a, b) => (a.target_date || "9").localeCompare(b.target_date || "9")).slice(0, 3);
   const followups = D.health_records.filter((r) => r.followup_date && daysBetween(t, r.followup_date) <= 30).sort((a, b) => a.followup_date.localeCompare(b.followup_date));
@@ -60,6 +63,14 @@ export function renderDashboard(root) {
         shopping.length ? shopping.slice(0, 5).map((r) => li(r.name, r.qty)) : none("Daftar belanja kosong."),
         low.length ? [h("small", { style: { fontWeight: 700 } }, "Stok menipis"), h("div", { class: "meta", style: { display: "flex", flexWrap: "wrap", gap: ".4rem" } }, low.slice(0, 8).map((r) => chip(`${r.name} (${Number(r.qty)})`, "red"))),
           h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(low.map((r) => ({ name: r.name }))) }, "🛒 Masukkan semua ke belanja")] : null),
+
+      panel("⏰ Cek kedaluwarsa", "red", "stock",
+        expiring.length ? expiring.slice(0, 6).map((r) => { const n = daysBetween(t, r.expiry_date); return li(r.name, `${fmtDate(r.expiry_date)}${r.qty != null ? " · sisa " + Number(r.qty) + (r.unit ? " " + r.unit : "") : ""}`, chip(n < 0 ? `Lewat ${-n} hari` : relDay(r.expiry_date), n < 0 ? "red" : n <= 3 ? "red" : "orange")); })
+          : none(D.stock_items.some((r) => r.expiry_date) ? "Tidak ada yang kedaluwarsa dalam 14 hari. 👍" : "Isi tanggal kedaluwarsa di Stok agar tidak ada makanan yang terlewat.")),
+
+      panel("🏍️ Pajak & servis aset", "blue", "assets",
+        alerts.length ? alerts.slice(0, 6).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone)))
+          : none(D.assets.length ? "Tidak ada pajak atau servis yang jatuh tempo dalam 30 hari. 👍" : "Catat motor atau mobil Anda agar pajak dan servis tidak terlewat.")),
 
       panel("🛠️ Perawatan segera", "orange", "maintenance",
         maint.length ? maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange"))) : none("Belum ada perawatan yang jatuh tempo dalam 14 hari.")),
