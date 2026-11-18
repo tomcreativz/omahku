@@ -10,6 +10,39 @@ export async function run(fn, okMsg) {
   catch (e) { console.error(e); toast(e?.message || "Terjadi kesalahan", "err"); return false; }
 }
 
+const DEFAULT_SOS = [["112", "Darurat umum"], ["119", "Ambulans"], ["110", "Polisi"], ["113", "Pemadam"], ["115", "SAR"]];
+function editSos(current) {
+  const rows = h("div", { style: { display: "flex", flexDirection: "column", gap: ".5rem" } });
+  const addRow = (n = "", l = "") => {
+    const r = h("div", { style: { display: "grid", gridTemplateColumns: "90px 1fr auto", gap: ".4rem", alignItems: "center" } },
+      h("input", { type: "tel", inputMode: "tel", placeholder: "Nomor", value: n, "aria-label": "Nomor", maxLength: 20 }),
+      h("input", { type: "text", placeholder: "Keterangan", value: l, "aria-label": "Keterangan", maxLength: 40 }),
+      h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Hapus baris", onclick: () => r.remove() }, "🗑"));
+    rows.append(r);
+  };
+  current.forEach(([n, l]) => addRow(n, l));
+  let close;
+  const save = async () => {
+    const items = [...rows.children].map((r) => { const i = r.querySelectorAll("input"); return { number: i[0].value.trim(), label: i[1].value.trim() }; }).filter((x) => x.number);
+    if (items.some((x) => !/^[\d+*#\s-]+$/.test(x.number))) return toast("Nomor hanya boleh berisi angka.", "err");
+    if (await run(async () => {
+      const old = (state.data.sos_numbers || []).map((r) => r.id);
+      if (old.length) await deleteMany("sos_numbers", old);
+      if (items.length) await insertMany("sos_numbers", items.map((x) => ({ ...x, label: x.label || "Darurat" })));
+    }, "Nomor darurat disimpan")) close();
+  };
+  const reset = async () => {
+    if (await run(async () => { const old = (state.data.sos_numbers || []).map((r) => r.id); if (old.length) await deleteMany("sos_numbers", old); }, "Dikembalikan ke standar")) close();
+  };
+  close = modal("Ubah nomor darurat", h("div", null,
+    h("p", { class: "hint", style: { marginBottom: ".8rem" } }, "Nomor ini dipakai bersama oleh seluruh anggota rumah. Tambahkan nomor lokal, mis. puskesmas atau satpam."),
+    rows,
+    h("button", { class: "btn sm white", type: "button", style: { marginTop: ".7rem" }, onclick: () => addRow() }, "＋ Tambah nomor"),
+    h("div", { class: "foot", style: { marginTop: "1rem" } },
+      h("button", { class: "btn white", type: "button", onclick: reset }, "↺ Standar"),
+      h("button", { class: "btn green", type: "button", onclick: save }, "Simpan"))));
+}
+
 const by = (...fns) => (a, b) => { for (const f of fns) { const x = f(a), y = f(b); if (x < y) return -1; if (x > y) return 1; } return 0; };
 const BIG = "9999-12-31";
 const bool = (v) => (v ? 1 : 0);
@@ -467,10 +500,12 @@ export const MODULES = [
     ],
     beforeSave: (o) => { o.is_primary = o.is_primary === "true" || o.is_primary === true; },
     top: (root) => {
+      const saved = state.data.sos_numbers || [];
+      const list = saved.length ? saved.map((r) => [r.number, r.label]) : DEFAULT_SOS;
       root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "var(--tint-red)" } },
-        h("h3", null, "📞 Nomor darurat nasional"),
-        h("div", { class: "body" }, h("div", { class: "sos" }, [["112", "Darurat umum"], ["119", "Ambulans"], ["110", "Polisi"], ["113", "Pemadam"], ["115", "SAR"]].map(([n, l]) =>
-          h("a", { class: "btn red call", href: "tel:" + n, "aria-label": `Telepon ${l} ${n}` }, `${n}`, h("small", { style: { fontWeight: 500 } }, l)))))));
+        h("h3", null, h("span", null, "📞 Nomor darurat nasional"), h("button", { class: "btn sm white more", type: "button", onclick: () => editSos(list) }, "✏️ Ubah")),
+        h("div", { class: "body" }, h("div", { class: "sos" }, list.map(([n, l]) =>
+          h("a", { class: "btn red call", href: "tel:" + n.replace(/[^\d+*#]/g, ""), "aria-label": `Telepon ${l} ${n}` }, `${n}`, h("small", { style: { fontWeight: 500 } }, l)))))));
     },
     sort: by((r) => (r.is_primary ? 0 : 1), (r) => (r.name || "").toLowerCase()),
     card: (r) => ({
