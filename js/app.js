@@ -162,11 +162,14 @@ const TABS = ["", "agenda", "tasks", "shopping"];
 let main, side, tabbar, topbarName, unsub;
 
 function showApp() {
-  const navLinks = NAV.map((n) => h("a", { href: "#/" + n.to, "data-to": n.to }, h("span", { class: "ico" }, n.icon), n.label));
+  const GROUP = { agenda: "Harian", stock: "Rumah", goals: "Keluarga", pengaturan: "Akun" };
+  const navLinks = NAV.flatMap((n) => [
+    GROUP[n.to] ? h("div", { class: "nav-label" }, GROUP[n.to]) : null,
+    h("a", { href: "#/" + n.to, "data-to": n.to, style: `--c:var(--${n.color || "yellow"})` }, h("span", { class: "ico" }, n.icon), n.label)]);
   side = h("aside", { class: "side", "aria-label": "Menu utama" }, logo(),
-    h("button", { class: "btn white block", type: "button", onclick: openSearch }, "🔍 Cari… ", h("small", { style: { fontWeight: 500 } }, "Ctrl+K")),
+    h("button", { class: "search-btn", type: "button", onclick: openSearch }, "🔍", h("span", null, "Cari…"), h("kbd", null, "Ctrl K")),
     h("nav", { class: "nav" }, navLinks),
-    h("div", { class: "who" }, h("small", null, "Masuk sebagai"), h("b", { id: "who-name" }, ""), h("small", { id: "who-house" }, ""), h("div", { style: { marginTop: ".5rem" } }, themeButton())));
+    h("div", { class: "who" }, h("div", { class: "grow" }, h("small", null, "Masuk sebagai"), h("b", { id: "who-name" }, ""), h("small", { id: "who-house" }, "")), themeButton()));
   const top = h("header", { class: "topbar" }, logo(), h("div", { class: "sos", style: { gap: ".4rem", flexWrap: "nowrap" } },
     h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Cari", onclick: openSearch }, "🔍"), themeButton(),
     h("a", { class: "btn sm white", href: "#/pengaturan", "aria-label": "Pengaturan" }, h("span", { id: "top-name" }, ""), " ⚙️")));
