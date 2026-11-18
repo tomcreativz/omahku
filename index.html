@@ -19,6 +19,7 @@
 <body>
   <div id="app"><div class="splash"><div class="spinner"></div></div></div>
   <noscript><p style="padding:2rem;font-family:sans-serif">Aplikasi ini membutuhkan JavaScript.</p></noscript>
+  <script>try{var p=localStorage.getItem("omahku_theme");document.documentElement.dataset.theme=(p?p==="dark":matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light"}catch(e){}</script>
   <script src="vendor/appwrite.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
