@@ -251,18 +251,26 @@ export const MODULES = [
       const rows = [...state.data.shopping_items].sort(by((r) => bool(r.done), (r) => r.created_at));
       const doneIds = rows.filter((r) => r.done).map((r) => r.id);
       const todo = rows.filter((r) => !r.done);
-      const shareText = `🛒 Daftar belanja ${state.household?.name || ""}\n\n` + todo.map((r) => `☐ ${r.name}${r.qty ? " — " + r.qty : ""}`).join("\n") + "\n\nDari Omahku";
+      const rp = (n) => "Rp " + Math.round(n).toLocaleString("id-ID");
+      const priceOf = (r) => (r.price != null && r.price !== "" && Number(r.price) >= 0 ? Number(r.price) : null);
+      const sum = (list) => list.reduce((t, r) => t + (priceOf(r) || 0), 0);
+      const totalAll = sum(rows), totalTodo = sum(todo), totalDone = sum(rows.filter((r) => r.done));
+      const noPrice = todo.filter((r) => priceOf(r) == null).length;
+      const shareText = `🛒 Daftar belanja ${state.household?.name || ""}\n\n` + todo.map((r) => `☐ ${r.name}${r.qty ? " — " + r.qty : ""}${priceOf(r) != null ? " (" + rp(priceOf(r)) + ")" : ""}`).join("\n")
+        + (totalTodo ? `\n\nPerkiraan total: ${rp(totalTodo)}` : "") + "\n\nDari Omahku";
+      const parsePrice = (v) => { const t = String(v).replace(/[^\d]/g, ""); if (!t) return null; const n = Number(t); return n <= 1e10 ? n : null; };
       const name = h("input", { type: "text", placeholder: "Tambah barang… (mis. Telur)", required: true, "aria-label": "Nama barang", autocomplete: "off", enterkeyhint: "done" });
-      const qty = h("input", { type: "text", placeholder: "Jumlah", style: { maxWidth: "9rem" }, "aria-label": "Jumlah" });
+      const qty = h("input", { type: "text", placeholder: "Jumlah", style: { maxWidth: "8rem" }, "aria-label": "Jumlah" });
+      const price = h("input", { type: "text", inputmode: "numeric", placeholder: "Harga (Rp)", style: { maxWidth: "9.5rem" }, "aria-label": "Harga dalam rupiah", autocomplete: "off" });
       const form = h("form", { class: "box card", style: { flexDirection: "row", flexWrap: "wrap", gap: ".6rem", marginBottom: "1.2rem" },
         onsubmit: async (e) => {
           e.preventDefault();
           const n = name.value.trim(); if (!n) return;
-          const q = qty.value.trim(); name.value = ""; qty.value = "";
+          const q = qty.value.trim(), pr = parsePrice(price.value); name.value = ""; qty.value = ""; price.value = "";
           window.__refocusShopping = true;
-          await run(() => insertRow("shopping_items", { name: n, qty: q || null }));
+          await run(() => insertRow("shopping_items", { name: n, qty: q || null, price: pr }));
         } },
-        h("div", { style: { flex: "1 1 220px" } }, name), qty, h("button", { class: "btn orange", type: "submit" }, "＋ Tambah"));
+        h("div", { style: { flex: "1 1 220px" } }, name), qty, price, h("button", { class: "btn orange", type: "submit" }, "＋ Tambah"));
       root.append(
         h("div", { class: "page-head" }, h("h1", null, h("span", null, "🛒"), "Daftar Belanja", h("span", { class: "tag" }, String(rows.length - doneIds.length))),
           h("div", { class: "sos" }, todo.length ? [
@@ -272,11 +280,21 @@ export const MODULES = [
         form);
       if (window.__refocusShopping) { window.__refocusShopping = false; setTimeout(() => name.focus(), 0); }
       if (!rows.length) { root.append(emptyState("🛒", "Daftar belanja kosong", "Tambah barang di atas, atau kirim dari halaman Stok dan Menu.")); return; }
+      root.append(h("section", { class: "box card", style: { marginBottom: "1.2rem", background: "var(--tint-green)" }, "aria-label": "Total belanja" },
+        h("div", { style: { display: "flex", flexWrap: "wrap", gap: ".6rem 2rem", alignItems: "baseline" } },
+          h("div", null, h("small", { style: { display: "block", fontWeight: 700 } }, "💰 Belum dibeli"), h("b", { style: { fontSize: "1.7rem" } }, rp(totalTodo))),
+          h("div", null, h("small", { style: { display: "block", fontWeight: 700 } }, "✅ Sudah dibeli"), h("b", { style: { fontSize: "1.2rem" } }, rp(totalDone))),
+          h("div", null, h("small", { style: { display: "block", fontWeight: 700 } }, "Total semua"), h("b", { style: { fontSize: "1.2rem" } }, rp(totalAll)))),
+        noPrice ? h("div", { class: "note" }, `${noPrice} barang belum diberi harga, jadi belum masuk hitungan. Isi harganya di kolom Rp pada tiap barang.`) : null,
+        h("div", { class: "note", style: { color: "var(--muted)" } }, "Harga = total harga barang itu (jumlah × harga satuan), bukan harga per satuan.")));
       const grid = h("div", { class: "grid wide" });
       for (const r of rows) {
         grid.append(h("div", { class: "box li", style: { boxShadow: "var(--sh-sm)", opacity: r.done ? 0.6 : 1 } },
           h("input", { type: "checkbox", checked: r.done, "aria-label": "Sudah dibeli: " + r.name, onchange: (e) => run(() => updateRow("shopping_items", r.id, { done: e.target.checked })) }),
           h("div", { class: "grow", style: { textDecoration: r.done ? "line-through" : "none", fontWeight: 700 } }, r.name, r.qty ? h("small", null, r.qty) : null),
+          h("input", { type: "text", inputmode: "numeric", placeholder: "Rp", value: priceOf(r) != null ? Math.round(priceOf(r)).toLocaleString("id-ID") : "", "aria-label": "Harga " + r.name, autocomplete: "off", style: { width: "7.5rem", minHeight: "40px", padding: ".3rem .5rem", textAlign: "right" },
+            onfocus: (e) => e.target.select(),
+            onchange: (e) => { const v = parsePrice(e.target.value); if (v === priceOf(r)) { e.target.value = v != null ? v.toLocaleString("id-ID") : ""; return; } run(() => updateRow("shopping_items", r.id, { price: v })); } }),
           h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Hapus " + r.name, onclick: () => run(() => deleteRow("shopping_items", r.id)) }, "✕")));
       }
       root.append(grid);
