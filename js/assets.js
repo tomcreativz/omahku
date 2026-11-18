@@ -1,7 +1,7 @@
 // Aset & kendaraan: nomor polisi, STNK, pajak, asuransi, jadwal servis, riwayat servis, saran servis AI, dan pengingat kalender.
 import { h, chip, modal, confirmBox, toast, today, fmtDate, fmtShort } from "./ui.js";
 import { state, deleteRow, deleteMany, updateRow } from "./data.js";
-import { reminders, urgencyOf, addMonthsISO, buildICS, isProperty, isVehicle, labelsOf } from "./assetcalc.js";
+import { reminders, urgencyOf, addMonthsISO, buildICS, isProperty, isVehicle, labelsOf, hasServiceData } from "./assetcalc.js";
 import { ensureAIKey, askAIJSON, aiStr, aiNum } from "./ai.js";
 
 const TYPES = ["Motor", "Mobil", "Sepeda", "Rumah / Tanah", "Elektronik", "Lainnya"];
@@ -12,10 +12,17 @@ const svcOf = (id) => state.data.asset_services.filter((s) => s.asset_id === id)
   .sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.created_at).localeCompare(String(a.created_at)));
 const assetById = (id) => state.data.assets.find((a) => a.id === id);
 
-// Pengingat yang akan jatuh tempo dalam 30 hari (atau sudah lewat), untuk Beranda.
+// Pengingat pajak/STNK/asuransi yang jatuh tempo dalam 30 hari (atau lewat), untuk Beranda.
 export function assetAlerts(now = today()) {
   const out = [];
-  for (const a of state.data.assets) for (const r of reminders(a, now)) if (r.days <= 30) out.push({ a, r });
+  for (const a of state.data.assets) for (const r of reminders(a, now, "docs")) if (r.days <= 30) out.push({ a, r });
+  return out.sort((x, y) => x.r.days - y.r.days);
+}
+// Pengingat servis kendaraan (menu Perawatan & Beranda).
+export const serviceAssets = () => state.data.assets.filter((a) => isVehicle(a) || hasServiceData(a));
+export function serviceAlerts(now = today()) {
+  const out = [];
+  for (const a of serviceAssets()) for (const r of reminders(a, now, "svc")) if (r.days <= 14) out.push({ a, r });
   return out.sort((x, y) => x.r.days - y.r.days);
 }
 
@@ -58,13 +65,13 @@ function kmModal(asset, run) {
 }
 
 // ---------- Kalender ----------
-function downloadICS(a) {
+function downloadICS(a, kind = "all") {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
-  const ics = buildICS(a, today(), stamp);
-  if (!ics) return toast("Isi dulu tanggal pajak, STNK, asuransi, atau jadwal servis.");
+  const ics = buildICS(a, today(), stamp, kind);
+  if (!ics) return toast(kind === "svc" ? "Isi dulu jadwal servis (servis terakhir dan interval)." : "Isi dulu tanggal pajak, STNK, atau asuransi.");
   const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
   const slug = (a.name || "aset").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "aset";
-  const link = h("a", { href: url, download: `omahku-${slug}.ics` });
+  const link = h("a", { href: url, download: `omahku-${slug}${kind === "svc" ? "-servis" : ""}.ics` });
   document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
   toast("File kalender diunduh. Buka file itu agar pengingat masuk ke kalender HP 📅", "ok");
@@ -139,13 +146,13 @@ async function showAdvice(asset, run) {
 export function assetModule({ openForm, run }) {
   return {
     key: "assets", table: "assets", title: "Aset & Kendaraan", nav: "Aset", singular: "Aset", icon: "🏍️", color: "blue", titleField: "name", wide: true,
-    emptyTitle: "Belum ada aset", emptyText: "Catat motor, mobil, atau rumah beserta pajak, STNK, asuransi, dan jadwal servisnya. Pengingat akan tampil di Beranda.",
+    emptyTitle: "Belum ada aset", emptyText: "Catat motor, mobil, atau rumah beserta pajak, STNK, dan asuransinya. Servis dan perawatan ada di menu Perawatan.",
     fields: [
       { k: "name", label: "Nama aset", required: true, placeholder: "mis. Honda Beat Hitam" },
       { k: "type", label: "Jenis", type: "select", options: TYPES, half: true, default: "Motor" },
       { k: "owner", label: "Pemilik / pengguna", type: "member", half: true },
       { k: "plate", label: "Nomor polisi", half: true, placeholder: "B 1234 XYZ" },
-      { k: "brand_model", label: "Merek & tipe", half: true, placeholder: "mis. Honda Beat 110", hint: "Dipakai untuk saran servis AI" },
+      { k: "brand_model", label: "Merek & tipe", half: true, placeholder: "mis. Honda Beat 110", hint: "Dipakai untuk saran servis AI di menu Perawatan" },
       { k: "year", label: "Tahun", type: "number", half: true, min: 1950, placeholder: "mis. 2019" },
       { k: "color", label: "Warna", half: true },
       { k: "purchase_date", label: "Tanggal beli", type: "date", half: true },
@@ -153,27 +160,21 @@ export function assetModule({ openForm, run }) {
       { k: "tax_due", label: "Pajak tahunan jatuh tempo", type: "date", half: true, hint: "PKB kendaraan / PBB rumah" },
       { k: "stnk_due", label: "STNK / plat 5 tahunan berakhir", type: "date", half: true, hint: "Rumah: sertifikat. Lainnya: garansi" },
       { k: "insurance_due", label: "Asuransi berakhir", type: "date", half: true },
-      { k: "odometer", label: "Kilometer sekarang", type: "number", half: true, min: 0 },
-      { k: "last_service_date", label: "Servis terakhir", type: "date", half: true },
-      { k: "last_service_km", label: "KM saat servis terakhir", type: "number", half: true, min: 0 },
-      { k: "interval_months", label: "Servis tiap (bulan)", type: "number", half: true, min: 1, placeholder: "mis. 3", hint: "Kosongkan jika tidak berdasarkan waktu" },
-      { k: "interval_km", label: "Servis tiap (km)", type: "number", half: true, min: 1, placeholder: "mis. 2000", hint: "Kosongkan jika tidak berdasarkan km" },
       { k: "chassis_no", label: "Nomor rangka", half: true },
       { k: "engine_no", label: "Nomor mesin", half: true },
       { k: "doc_location", label: "Lokasi dokumen (BPKB, STNK, polis)", placeholder: "mis. Lemari kamar, map biru" },
       { k: "notes", label: "Catatan", type: "textarea" },
     ],
-    validate: (o) => (has(o.last_service_km) && has(o.odometer) && Number(o.last_service_km) > Number(o.odometer) ? "KM servis terakhir tidak boleh lebih besar dari kilometer sekarang." : ""),
     beforeSave: (o) => { if (o.plate) o.plate = o.plate.toUpperCase(); },
     filters: () => [[
       { id: "all", label: "Semua" },
-      { id: "att", label: "⚠ Perlu perhatian", test: (r) => urgencyOf(r, today()) <= 30 },
+      { id: "att", label: "⚠ Perlu perhatian", test: (r) => urgencyOf(r, today(), "docs") <= 30 },
       { id: "veh", label: "Kendaraan", test: (r) => isVehicle(r) },
     ]],
-    sort: (a, b) => urgencyOf(a, today()) - urgencyOf(b, today()) || (a.name || "").localeCompare(b.name || ""),
+    sort: (a, b) => urgencyOf(a, today(), "docs") - urgencyOf(b, today(), "docs") || (a.name || "").localeCompare(b.name || ""),
     afterRemove: async (r) => { const ids = svcOf(r.id).map((s) => s.id); if (ids.length) await deleteMany("asset_services", ids); },
     card: (r, api) => {
-      const now = today(), rem = reminders(r, now), L = labelsOf(r), svcs = svcOf(r.id), vehicle = isVehicle(r);
+      const now = today(), rem = reminders(r, now, "docs"), L = labelsOf(r), vehicle = isVehicle(r);
       const owner = r.owner ? state.members.find((m) => m.user_id === r.owner)?.display_name || (r.owner === "both" ? "Berdua" : "") : "";
       const worst = rem.reduce((m, x) => Math.min(m, x.days), 9999);
       const detail = [
@@ -182,39 +183,76 @@ export function assetModule({ openForm, run }) {
       ].filter(Boolean);
       const next12 = (d) => { let n = addMonthsISO(d, 12), g = 0; while (n <= now && g++ < 20) n = addMonthsISO(n, 12); return n; };
       const acts = [
-        h("button", { class: "btn sm orange", type: "button", onclick: () => openForm(serviceMod(r)) }, "🔧 Catat servis"),
-        vehicle ? h("button", { class: "btn sm white", type: "button", onclick: () => kmModal(r, run) }, "🛣 Update KM") : null,
         r.tax_due ? h("button", { class: "btn sm green", type: "button", onclick: async () => {
           const nxt = next12(r.tax_due);
           if (await confirmBox(`Catat ${L.tax.toLowerCase()} sudah dibayar? Jatuh tempo berikutnya menjadi ${fmtDate(nxt)}.`, "Ya, sudah dibayar")) run(() => updateRow("assets", r.id, { tax_due: nxt, tax_paid_on: now }), `${L.tax} dicatat sudah dibayar ✓`);
         } }, `✓ ${L.tax} dibayar`) : null,
-        r.stnk_due && isVehicle(r) ? h("button", { class: "btn sm green", type: "button", onclick: async () => {
+        r.stnk_due && vehicle ? h("button", { class: "btn sm green", type: "button", onclick: async () => {
           const nxt = addMonthsISO(r.stnk_due, 60);
           if (await confirmBox(`Catat STNK / plat sudah diperpanjang? Berlaku sampai ${fmtDate(nxt)}.`, "Ya, sudah diperpanjang")) run(() => updateRow("assets", r.id, { stnk_due: nxt }), "STNK dicatat diperpanjang ✓");
         } }, "✓ STNK diperpanjang") : null,
-        vehicle ? h("button", { class: "btn sm lilac", type: "button", onclick: () => showAdvice(r, run) }, "✨ Saran servis") : null,
-        h("button", { class: "btn sm white", type: "button", onclick: () => downloadICS(r) }, "📅 Ke kalender"),
+        h("button", { class: "btn sm white", type: "button", onclick: () => downloadICS(r, "docs") }, "📅 Ke kalender"),
       ];
       return {
         title: r.name, color: worst < 0 ? "red" : worst <= 14 ? "orange" : "blue",
         meta: [
           r.type ? chip(r.type, "blue") : null, r.plate ? chip("🔢 " + r.plate, "yellow") : null,
           [r.brand_model, r.year, r.color].filter(Boolean).length ? chip([r.brand_model, r.year, r.color].filter(Boolean).join(" · ")) : null,
-          owner ? chip("👤 " + owner, "lilac") : null, has(r.odometer) ? chip("🛣 " + fkm(r.odometer)) : null,
+          owner ? chip("👤 " + owner, "lilac") : null,
         ],
         body: [
           rem.length ? h("div", { class: "meta", style: { display: "flex", flexWrap: "wrap", gap: ".4rem" } }, rem.map((x) =>
-            chip(`${ICON[x.id]} ${x.label}${x.date ? " " + fmtShort(x.date) : ""} · ${x.text}`, x.tone))) : h("div", { class: "note" }, "Belum ada pengingat. Isi tanggal pajak, STNK, atau jadwal servis lewat tombol Ubah."),
+            chip(`${ICON[x.id]} ${x.label}${x.date ? " " + fmtShort(x.date) : ""} · ${x.text}`, x.tone))) : h("div", { class: "note" }, "Belum ada pengingat. Isi tanggal pajak, STNK, atau asuransi lewat tombol Ubah."),
           detail.length ? h("details", { class: "steps" }, h("summary", null, "📄 Detail & dokumen"), h("div", { style: { display: "flex", flexDirection: "column", gap: ".3rem", marginTop: ".5rem" } }, detail.map(([k, v]) => h("div", { class: "note" }, h("b", null, k + ": "), v)))) : null,
-          svcs.length ? h("details", { class: "steps" }, h("summary", null, `🔧 Riwayat servis (${svcs.length})`), h("div", { style: { display: "flex", flexDirection: "column", gap: ".45rem", marginTop: ".5rem" } }, svcs.slice(0, 10).map((s) =>
-            h("div", { class: "li" }, h("div", { class: "grow" }, h("b", null, s.what), h("small", null, [fmtShort(s.date), has(s.km) ? fkm(s.km) : "", s.workshop].filter(Boolean).join(" · ")), s.notes ? h("small", null, s.notes) : null),
-              h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Ubah catatan servis", onclick: () => openForm(serviceMod(r), s) }, "✏️"),
-              h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Hapus catatan servis", onclick: async () => { if (await confirmBox(`Hapus catatan servis “${s.what}”?`)) run(() => deleteRow("asset_services", s.id), "Dihapus"); } }, "✕"))))) : null,
-          r.ai_advice ? h("details", { class: "steps" }, h("summary", null, `✨ Saran servis AI${r.ai_advice_date ? " · " + fmtShort(r.ai_advice_date) : ""}`), h("div", { class: "note", style: { marginTop: ".5rem" } }, r.ai_advice)) : null,
+          vehicle || hasServiceData(r) ? h("div", { class: "note" }, "🔧 Servis & perawatan: lihat menu ", h("a", { href: "#/maintenance" }, "Perawatan"), ".") : null,
           r.notes ? h("div", { class: "note" }, r.notes) : null,
         ],
         actions: acts,
       };
     },
   };
+}
+
+// ============================================================
+// Perawatan kendaraan (tampil di menu Perawatan)
+// ============================================================
+export function serviceTools({ openForm, run }) {
+  const setupMod = () => ({
+    key: "asetup", table: "assets", singular: "Jadwal servis", color: "orange",
+    fields: [
+      { k: "odometer", label: "Kilometer sekarang", type: "number", half: true, min: 0 },
+      { k: "last_service_date", label: "Servis terakhir", type: "date", half: true },
+      { k: "last_service_km", label: "KM saat servis terakhir", type: "number", half: true, min: 0 },
+      { k: "interval_months", label: "Servis tiap (bulan)", type: "number", half: true, min: 1, placeholder: "mis. 3", hint: "Kosongkan jika tidak berdasarkan waktu" },
+      { k: "interval_km", label: "Servis tiap (km)", type: "number", half: true, min: 1, placeholder: "mis. 2000", hint: "Kosongkan jika tidak berdasarkan km" },
+    ],
+    validate: (o) => (has(o.last_service_km) && has(o.odometer) && Number(o.last_service_km) > Number(o.odometer) ? "KM servis terakhir tidak boleh lebih besar dari kilometer sekarang." : ""),
+  });
+  const card = (r) => {
+    const now = today(), rem = reminders(r, now, "svc"), svcs = svcOf(r.id), vehicle = isVehicle(r);
+    const worst = rem.reduce((m, x) => Math.min(m, x.days), 9999);
+    const color = worst < 0 ? "red" : worst <= 14 ? "orange" : "blue";
+    const owner = r.owner ? state.members.find((m) => m.user_id === r.owner)?.display_name || (r.owner === "both" ? "Berdua" : "") : "";
+    const acts = [
+      h("button", { class: "btn sm orange", type: "button", onclick: () => openForm(serviceMod(r)) }, "🔧 Catat servis"),
+      vehicle ? h("button", { class: "btn sm white", type: "button", onclick: () => kmModal(r, run) }, "🛣 Update KM") : null,
+      vehicle ? h("button", { class: "btn sm lilac", type: "button", onclick: () => showAdvice(r, run) }, "✨ Saran servis") : null,
+      h("button", { class: "btn sm white", type: "button", onclick: () => openForm(setupMod(), r) }, "⚙️ Jadwal servis"),
+      h("button", { class: "btn sm white", type: "button", onclick: () => downloadICS(r, "svc") }, "📅 Ke kalender"),
+    ];
+    return h("article", { class: "box card accent", style: { borderLeftColor: `var(--${color})` } },
+      h("div", { class: "top" }, h("div", { class: "grow" }, h("div", { class: "ct" }, (isVehicle(r) ? "🚗 " : "🔧 ") + r.name),
+        h("div", { class: "meta", style: { marginTop: ".4rem" } },
+          r.type ? chip(r.type, "blue") : null, r.plate ? chip("🔢 " + r.plate, "yellow") : null, owner ? chip("👤 " + owner, "lilac") : null, has(r.odometer) ? chip("🛣 " + fkm(r.odometer)) : null))),
+      rem.length ? h("div", { class: "meta", style: { display: "flex", flexWrap: "wrap", gap: ".4rem" } }, rem.map((x) => chip(`${ICON.svc} Servis${x.date ? " " + fmtShort(x.date) : ""} · ${x.text}`, x.tone)))
+        : h("div", { class: "note" }, "Belum ada jadwal servis. Tekan “⚙️ Jadwal servis” untuk mengisi servis terakhir dan intervalnya."),
+      has(r.last_service_date) ? h("div", { class: "note" }, `Servis terakhir: ${fmtDate(r.last_service_date)}${has(r.last_service_km) ? " · " + fkm(r.last_service_km) : ""}`) : null,
+      svcs.length ? h("details", { class: "steps" }, h("summary", null, `🔧 Riwayat servis (${svcs.length})`), h("div", { style: { display: "flex", flexDirection: "column", gap: ".45rem", marginTop: ".5rem" } }, svcs.slice(0, 10).map((s) =>
+        h("div", { class: "li" }, h("div", { class: "grow" }, h("b", null, s.what), h("small", null, [fmtShort(s.date), has(s.km) ? fkm(s.km) : "", s.workshop].filter(Boolean).join(" · ")), s.notes ? h("small", null, s.notes) : null),
+          h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Ubah catatan servis", onclick: () => openForm(serviceMod(r), s) }, "✏️"),
+          h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Hapus catatan servis", onclick: async () => { if (await confirmBox(`Hapus catatan servis “${s.what}”?`)) run(() => deleteRow("asset_services", s.id), "Dihapus"); } }, "✕"))))) : null,
+      r.ai_advice ? h("details", { class: "steps" }, h("summary", null, `✨ Saran servis AI${r.ai_advice_date ? " · " + fmtShort(r.ai_advice_date) : ""}`), h("div", { class: "note", style: { marginTop: ".5rem" } }, r.ai_advice)) : null,
+      h("div", { class: "acts" }, acts));
+  };
+  return { card, urgency: (r) => urgencyOf(r, today(), "svc") };
 }

@@ -14,7 +14,7 @@ function sources() {
   list.push(
     { route: "health", table: "health_profiles", icon: "🧑‍⚕️", label: "Profil kesehatan", titleField: "person", fields: PROFILE.fields },
     { route: "health", table: "health_metrics", icon: "📈", label: "Pengukuran", titleField: "person", fields: METRIC.fields },
-    { route: "assets", table: "asset_services", icon: "🔧", label: "Servis aset", titleField: "what", fields: SVC_FIELDS });
+    { route: "maintenance", table: "asset_services", icon: "🔧", label: "Servis aset", titleField: "what", fields: SVC_FIELDS });
   return list;
 }
 

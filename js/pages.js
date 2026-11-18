@@ -3,7 +3,7 @@ import { CONFIG } from "./config.js";
 import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, relDay } from "./ui.js";
 import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
-import { assetAlerts } from "./assets.js";
+import { assetAlerts, serviceAlerts } from "./assets.js";
 import { vaxAlerts } from "./health.js";
 import { ageLabel } from "./vaxcalc.js";
 import { getPref, setPref } from "./theme.js";
@@ -27,6 +27,7 @@ export function renderDashboard(root) {
   const low = D.stock_items.filter((r) => Number(r.qty) <= Number(r.min_qty));
   const expiring = D.stock_items.filter((r) => r.expiry_date && daysBetween(t, r.expiry_date) <= 14).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
   const alerts = assetAlerts(t);
+  const svcAl = serviceAlerts(t);
   const vax = vaxAlerts();
   const maint = D.maintenance.map((r) => ({ r, n: nextDue(r) })).filter((x) => x.n && daysBetween(t, x.n) <= 14).sort((a, b) => a.n.localeCompare(b.n));
   const goals = D.goals.filter((g) => progressOf(g) < 100).sort((a, b) => (a.target_date || "9").localeCompare(b.target_date || "9")).slice(0, 3);
@@ -72,16 +73,18 @@ export function renderDashboard(root) {
         expiring.length ? expiring.slice(0, 6).map((r) => { const n = daysBetween(t, r.expiry_date); return li(r.name, `${fmtDate(r.expiry_date)}${r.qty != null ? " · sisa " + Number(r.qty) + (r.unit ? " " + r.unit : "") : ""}`, chip(n < 0 ? `Lewat ${-n} hari` : relDay(r.expiry_date), n < 0 ? "red" : n <= 3 ? "red" : "orange")); })
           : none(D.stock_items.some((r) => r.expiry_date) ? "Tidak ada yang kedaluwarsa dalam 14 hari. 👍" : "Isi tanggal kedaluwarsa di Stok agar tidak ada makanan yang terlewat.")),
 
-      panel("🏍️ Pajak & servis aset", "blue", "assets",
+      panel("🏍️ Pajak & dokumen aset", "blue", "assets",
         alerts.length ? alerts.slice(0, 6).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone)))
-          : none(D.assets.length ? "Tidak ada pajak atau servis yang jatuh tempo dalam 30 hari. 👍" : "Catat motor atau mobil Anda agar pajak dan servis tidak terlewat.")),
+          : none(D.assets.length ? "Tidak ada pajak atau dokumen yang jatuh tempo dalam 30 hari. 👍" : "Catat motor atau mobil Anda agar pajak dan STNK tidak terlewat.")),
 
       panel("💉 Imunisasi anak", "pink", "health",
         vax.length ? vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone)))
           : none(D.health_profiles.some((p) => p.birth_date) ? "Tidak ada imunisasi yang perlu dikejar sekarang. 👍" : "Isi tanggal lahir anak di Profil Kesehatan untuk jadwal imunisasi.")),
 
       panel("🛠️ Perawatan segera", "orange", "maintenance",
-        maint.length ? maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange"))) : none("Belum ada perawatan yang jatuh tempo dalam 14 hari.")),
+        maint.length || svcAl.length ? [
+          ...svcAl.slice(0, 3).map(({ a, r }) => li(`🔧 Servis ${a.name}${a.plate ? " · " + a.plate : ""}`, r.date ? fmtDate(r.date) : "Berdasarkan kilometer", chip(r.text, r.tone))),
+          ...maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange")))] : none("Belum ada perawatan atau servis yang jatuh tempo dalam 14 hari.")),
 
       panel("🎯 Target keluarga", "yellow", "goals",
         goals.length ? goals.map((g) => h("div", { class: "li", style: { flexDirection: "column", alignItems: "stretch" } },

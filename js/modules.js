@@ -3,7 +3,7 @@ import { h, chip, copyText, modal, confirmBox, toast, emptyState, today, addDays
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
 import { openAIAdvisor, completeRecipe, openWeeklyPlanner } from "./ai.js";
 import { healthView } from "./health.js";
-import { assetModule } from "./assets.js";
+import { assetModule, serviceTools, serviceAssets } from "./assets.js";
 
 export async function run(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg, "ok"); return true; }
@@ -191,6 +191,45 @@ function wrapCard(mod, r, api) {
   return h("article", { class: "box card accent" + (c.done ? " done" : ""), style: { borderLeftColor: `var(--${c.color || "yellow"})` } },
     h("div", { class: "top" }, left, h("div", { class: "grow" }, h("div", { class: "ct" }, c.title), c.meta?.length ? h("div", { class: "meta", style: { marginTop: ".4rem" } }, c.meta) : null)),
     c.body || null, acts);
+}
+
+// ============================================================
+// Menu Perawatan: rumah + kendaraan (servis, riwayat, KM, saran AI)
+// ============================================================
+function maintenanceView(root) {
+  const mod = modByKey.maintenance, assetMod = modByKey.assets;
+  const st = (uiState.maintenance ||= { f: "all" });
+  const tools = serviceTools({ openForm, run });
+  const homeRows = state.data.maintenance, veh = serviceAssets();
+  const homeSoon = (r) => { const n = nextDue(r); return n && daysBetween(today(), n) <= 14; };
+  const FILTERS = [["all", "Semua"], ["home", "🏠 Rumah"], ["veh", "🚗 Kendaraan"], ["soon", "⚠ Segera / terlambat"]];
+  const showHome = st.f !== "veh", showVeh = st.f !== "home";
+  let home = showHome ? homeRows : [], vs = showVeh ? veh : [];
+  if (st.f === "soon") { home = home.filter(homeSoon); vs = vs.filter((a) => tools.urgency(a) <= 14); }
+  home = [...home].sort(mod.sort); vs = [...vs].sort((a, b) => tools.urgency(a) - tools.urgency(b) || (a.name || "").localeCompare(b.name || ""));
+  const api = {
+    edit: (r) => openForm(mod, r),
+    remove: async (r) => { if (await confirmBox(`Hapus “${r.title}”?`)) run(() => deleteRow("maintenance", r.id), "Dihapus"); },
+    patch: (r, p, msg) => run(() => updateRow("maintenance", r.id, p), msg),
+  };
+  root.append(h("div", { class: "page-head" },
+    h("h1", null, h("span", null, mod.icon), mod.title, h("span", { class: "tag" }, String(home.length + vs.length))),
+    h("div", { style: { display: "flex", gap: ".5rem", flexWrap: "wrap" } },
+      h("button", { class: "btn orange", type: "button", onclick: () => openForm(mod) }, "＋ Rumah"),
+      h("button", { class: "btn blue", type: "button", onclick: () => openForm(assetMod, null, { type: "Motor" }) }, "＋ Kendaraan"))),
+    h("div", { class: "filters", role: "group", "aria-label": "Filter" }, FILTERS.map(([id, label]) =>
+      h("button", { type: "button", class: id === st.f ? "on" : "", onclick: () => { st.f = id; document.dispatchEvent(new CustomEvent("rt:rerender")); } }, label))));
+  if (!home.length && !vs.length) {
+    root.append(emptyState(mod.icon, homeRows.length || veh.length ? "Tidak ada yang cocok" : "Belum ada jadwal perawatan",
+      "Servis AC, kuras bak mandi, ganti filter air, servis motor atau mobil, ganti oli…",
+      h("div", { style: { display: "flex", gap: ".5rem", flexWrap: "wrap", justifyContent: "center" } },
+        h("button", { class: "btn orange", type: "button", onclick: () => openForm(mod) }, "＋ Perawatan rumah"),
+        h("button", { class: "btn blue", type: "button", onclick: () => openForm(assetMod, null, { type: "Motor" }) }, "＋ Kendaraan"))));
+    return;
+  }
+  if (home.length) { if (st.f === "all" || st.f === "soon") root.append(h("div", { class: "group-title" }, "🏠 Rumah")); root.append(h("div", { class: "grid" }, home.map((r) => wrapCard(mod, r, api)))); }
+  if (vs.length) { if (st.f === "all" || st.f === "soon") root.append(h("div", { class: "group-title" }, "🚗 Kendaraan")); root.append(h("div", { class: "grid wide" }, vs.map((a) => tools.card(a)))); }
+  if (showVeh && !veh.length) root.append(h("p", { class: "disc" }, "Belum ada kendaraan. Tekan “＋ Kendaraan” untuk mencatat motor atau mobil beserta jadwal servisnya."));
 }
 
 // ============================================================
@@ -421,11 +460,12 @@ export const MODULES = [
 
   // ---------------- Perawatan rumah ----------------
   {
-    key: "maintenance", table: "maintenance", title: "Perawatan Rumah", nav: "Perawatan", singular: "Perawatan", icon: "🛠️", color: "orange",
+    key: "maintenance", table: "maintenance", title: "Perawatan", nav: "Perawatan", singular: "Perawatan rumah", icon: "🛠️", color: "orange",
     emptyTitle: "Belum ada jadwal perawatan", emptyText: "Servis AC, kuras bak mandi, ganti filter air, cek tabung gas…",
+    view: (root) => maintenanceView(root),
     fields: [
       { k: "title", label: "Perawatan", required: true, placeholder: "mis. Servis AC" },
-      { k: "category", label: "Kategori", type: "select", options: ["AC & elektronik", "Air & pipa", "Kendaraan", "Taman", "Bangunan", "Lainnya"], half: true, default: "AC & elektronik" },
+      { k: "category", label: "Kategori", type: "select", options: ["AC & elektronik", "Air & pipa", "Taman", "Bangunan", "Lainnya"], half: true, default: "AC & elektronik" },
       { k: "interval_days", label: "Ulangi tiap (hari)", type: "number", half: true, min: 1, placeholder: "mis. 90", hint: "Kosongkan jika sekali saja" },
       { k: "last_done", label: "Terakhir dilakukan", type: "date" },
       { k: "notes", label: "Catatan", type: "textarea", placeholder: "Teknisi langganan, nomor HP, biaya, dll." },

@@ -41,22 +41,25 @@ export function nextService(a, now) {
   return { byDate, byKm, daysLeft, kmLeft, over, tone: over ? "red" : near ? "orange" : soon ? "yellow" : "green", text: parts.join(" · ") };
 }
 
+// Aset yang masuk menu Perawatan: kendaraan, atau aset lain yang sudah punya data servis.
+export const hasServiceData = (a) => filled(a.last_service_date) || filled(a.last_service_km) || filled(a.interval_months) || filled(a.interval_km);
 export const isProperty = (a) => a.type === "Rumah / Tanah";
 export const isVehicle = (a) => !a.type || ["Motor", "Mobil", "Sepeda"].includes(a.type);
 const LABELS = { veh: { tax: "Pajak", stnk: "STNK/plat" }, prop: { tax: "PBB", stnk: "Sertifikat" }, oth: { tax: "Pajak/biaya", stnk: "Garansi" } };
 export const labelsOf = (a) => LABELS[isProperty(a) ? "prop" : isVehicle(a) ? "veh" : "oth"];
 
 // Daftar pengingat satu aset. `days` dipakai untuk mengurutkan (kecil = mendesak).
-export function reminders(a, now) {
+// kind: "all" (semua), "docs" (pajak/STNK/asuransi saja), "svc" (servis saja).
+export function reminders(a, now, kind = "all") {
   const out = [];
   const L = labelsOf(a);
   const defs = [["tax", L.tax, "tax_due"], ["stnk", L.stnk, "stnk_due"], ["ins", "Asuransi", "insurance_due"]];
   for (const [id, label, key] of defs) {
-    if (!a[key]) continue;
+    if (kind === "svc" || !a[key]) continue;
     const days = daysTo(a[key], now);
     out.push({ id, label, date: a[key], days, tone: toneByDays(days), text: relText(days) });
   }
-  const s = nextService(a, now);
+  const s = kind === "docs" ? null : nextService(a, now);
   if (s) {
     let days = s.daysLeft ?? 999;
     if (s.kmLeft != null) days = s.kmLeft < 0 ? Math.min(days, -1) : s.kmLeft <= 300 ? Math.min(days, 7) : s.kmLeft <= 500 ? Math.min(days, 30) : days;
@@ -64,20 +67,20 @@ export function reminders(a, now) {
   }
   return out;
 }
-export const urgencyOf = (a, now) => reminders(a, now).reduce((m, r) => Math.min(m, r.days), 9999);
+export const urgencyOf = (a, now, kind = "all") => reminders(a, now, kind).reduce((m, r) => Math.min(m, r.days), 9999);
 
 // ---------- Kalender (.ics) ----------
 const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 const fold = (line) => { const out = []; while (line.length > 72) { out.push(line.slice(0, 72)); line = " " + line.slice(72); } out.push(line); return out.join("\r\n"); };
 const ymd = (s) => s.replace(/-/g, "");
 
-export function buildICS(a, now, stamp) {
+export function buildICS(a, now, stamp, kind = "all") {
   const name = a.name + (a.plate ? ` (${a.plate})` : "");
   const L = labelsOf(a);
   const what = { tax: `${L.tax} ${name} jatuh tempo`, stnk: `${L.stnk} ${name} berakhir`, ins: `Asuransi ${name} berakhir`, svc: `Servis berkala ${name}` };
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Omahku//Pengingat Aset//ID", "CALSCALE:GREGORIAN"];
   let n = 0;
-  for (const r of reminders(a, now)) {
+  for (const r of reminders(a, now, kind)) {
     if (!r.date) continue;
     n++;
     lines.push("BEGIN:VEVENT", `UID:${a.id || "aset"}-${r.id}-${ymd(r.date)}@omahku`, `DTSTAMP:${stamp}`,
