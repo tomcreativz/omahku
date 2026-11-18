@@ -1,7 +1,7 @@
 // Saran menu dari AI lewat OpenRouter.
 // API key diisi sendiri oleh tiap pengguna dan disimpan HANYA di perangkat ini (localStorage).
 // Key tidak masuk ke database keluarga dan tidak terlihat oleh pasangan.
-import { h, chip, modal, toast, today, addDays } from "./ui.js";
+import { h, chip, modal, toast, today, addDays, daysBetween, fmtDate, fmtShort } from "./ui.js";
 import { state, insertMany, updateRow } from "./data.js";
 
 export const DEFAULT_MODEL = "openrouter/free";
@@ -20,17 +20,17 @@ function saveAI(o) {
 const maskKey = (k) => (k.length > 8 ? "••••" + k.slice(-4) : "••••");
 
 // ---------- Panggilan ke OpenRouter ----------
-async function callAI(messages) {
+async function callAI(messages, { maxTokens = 4000, timeout = 120000 } = {}) {
   const { key, model } = getAI();
   if (!key) throw new Error("API key OpenRouter belum diisi.");
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 120000);
+  const timer = setTimeout(() => ctrl.abort(), timeout);
   let res;
   try {
     res = await fetch(ENDPOINT, {
       method: "POST", signal: ctrl.signal,
       headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", "HTTP-Referer": location.origin, "X-Title": "Omahku" },
-      body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: 4000 }),
+      body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens }),
     });
   } catch (e) {
     throw new Error(e?.name === "AbortError" ? "AI terlalu lama menjawab. Coba lagi, atau kurangi jumlah resep." : "Tidak bisa terhubung ke OpenRouter. Periksa koneksi internet.");
@@ -151,8 +151,8 @@ export function ensureAIKey() {
 }
 
 // Minta AI menjawab dalam bentuk JSON (dipakai fitur lain, mis. saran servis).
-export async function askAIJSON(system, user) {
-  return parseJSON(await callAI([{ role: "system", content: system }, { role: "user", content: user }]));
+export async function askAIJSON(system, user, opts) {
+  return parseJSON(await callAI([{ role: "system", content: system }, { role: "user", content: user }], opts));
 }
 export { str as aiStr, num as aiNum };
 
@@ -298,4 +298,135 @@ export async function completeRecipe(row, { addToShopping }, btn) {
     console.error(e); toast(e?.message || "Gagal meminta AI", "err");
     if (btn) { btn.disabled = false; btn.textContent = "✨ Resep AI"; }
   }
+}
+
+// ============================================================
+// Rencana menu mingguan (dari stok, utamakan yang hampir kedaluwarsa)
+// ============================================================
+const WEEK_SYSTEM = `Kamu adalah perencana menu mingguan untuk keluarga di Indonesia. Susun menu rumahan yang hemat, bergizi, dan bervariasi (jangan mengulang masakan yang sama), dengan bahan yang mudah dibeli di pasar atau supermarket Indonesia. Tulis dalam Bahasa Indonesia dengan takaran jelas.
+Balas HANYA dengan JSON valid, tanpa teks lain dan tanpa markdown, dengan bentuk persis:
+{"days":[{"day":0,"meals":[{"meal":"Makan siang","dish":"nama masakan","time_minutes":30,"servings":4,"ingredients":[{"name":"Ayam","qty":"500 g"}]}]}]}
+"day" adalah nomor hari mulai dari 0. Jangan menulis langkah memasak.`;
+
+const WEEKDAY = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+const dayName = (iso) => WEEKDAY[new Date(iso + "T00:00:00").getDay()];
+const daysLeftOf = (r) => (r.expiry_date ? daysBetween(today(), r.expiry_date) : null);
+const usableStock = () => state.data.stock_items.filter((s) => Number(s.qty) > 0 && !(daysLeftOf(s) != null && daysLeftOf(s) < 0));
+const stockHit = (name, list) => list.find((s) => { const a = norm(name), b = norm(s.name); return a.length >= 3 && b.length >= 3 && (a === b || a.startsWith(b + " ") || b.startsWith(a + " ")); });
+
+function normWeek(raw, nDays, meals, taken) {
+  const seenDish = new Set(), seenSlot = new Set(), out = [];
+  for (const d of Array.isArray(raw?.days) ? raw.days : []) {
+    const day = Number(d?.day);
+    if (!Number.isInteger(day) || day < 0 || day >= nDays) continue;
+    for (const m of Array.isArray(d?.meals) ? d.meals : []) {
+      const r = normRecipe({ ...m, steps: [], meal: m?.meal });
+      if (!r || !meals.includes(r.meal)) continue;
+      const slot = day + "|" + r.meal, dish = norm(r.dish);
+      if (taken.has(slot) || seenSlot.has(slot) || seenDish.has(dish)) continue;
+      seenSlot.add(slot); seenDish.add(dish);
+      out.push({ ...r, day });
+    }
+  }
+  return out.sort((a, b) => a.day - b.day || MEALS.indexOf(a.meal) - MEALS.indexOf(b.meal));
+}
+
+export async function openWeeklyPlanner({ addToShopping }) {
+  if (!(await ensureAIKey())) return;
+  const box = h("div");
+  let close = () => {};
+
+  const days = h("select", { id: "wp_days" }, [3, 5, 7].map((n) => h("option", { value: n, selected: n === 7 }, `${n} hari`)));
+  const start = h("input", { id: "wp_start", type: "date", value: today() });
+  const serv = h("input", { id: "wp_serv", type: "number", min: 1, max: 20, value: 4, inputmode: "numeric" });
+  const wish = h("textarea", { id: "wp_wish", rows: 2, placeholder: "mis. hemat, anak tidak suka pedas, minggu ini banyak sayur" });
+  const mealBoxes = MEALS.slice(0, 3).map((m) => ({ m, el: h("input", { type: "checkbox", checked: m !== "Sarapan", "aria-label": m }) }));
+  const useStock = h("input", { id: "wp_stock", type: "checkbox", checked: true });
+  const go = h("button", { class: "btn pink block", type: "submit" }, "📆 Buat rencana");
+  const results = h("div", { style: { marginTop: "1rem" } });
+
+  const form = h("form", { novalidate: true },
+    h("div", { class: "msg" }, "AI menyusun menu per hari, memakai stok di rumah lebih dulu (terutama yang hampir kedaluwarsa), dan melewati jadwal yang sudah terisi. Cara memasak bisa diminta nanti lewat tombol ✨ Resep AI di tiap menu."),
+    h("div", { class: "row" }, h("div", { class: "field" }, h("label", { for: "wp_start" }, "Mulai tanggal"), start), h("div", { class: "field" }, h("label", { for: "wp_days" }, "Lama rencana"), days)),
+    h("div", { class: "field" }, h("label", null, "Waktu makan yang direncanakan"),
+      h("div", { style: { display: "flex", flexWrap: "wrap", gap: ".5rem 1.2rem" } }, mealBoxes.map(({ m, el }) => h("label", { class: "checks", style: { display: "flex", flexDirection: "row", alignItems: "center", gap: ".5rem", cursor: "pointer" } }, el, h("span", null, m))))),
+    h("div", { class: "row" }, h("div", { class: "field" }, h("label", { for: "wp_serv" }, "Porsi (orang)"), serv)),
+    h("div", { class: "field" }, h("label", { for: "wp_wish" }, "Permintaan khusus (opsional)"), wish),
+    h("label", { class: "checks", style: { display: "flex", flexDirection: "row", alignItems: "center", gap: ".6rem", marginBottom: "1rem", cursor: "pointer" } }, useStock, h("span", null, "Utamakan bahan dari Stok")),
+    go);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const meals = mealBoxes.filter(({ el }) => el.checked).map(({ m }) => m);
+    if (!meals.length) { results.replaceChildren(h("div", { class: "msg err" }, "Pilih minimal satu waktu makan.")); return; }
+    const n = Number(days.value), startDate = start.value || today();
+    const taken = new Set();
+    const takenTxt = [];
+    for (let i = 0; i < n; i++) for (const m of meals) {
+      const ex = state.data.menus.find((x) => x.date === addDays(startDate, i) && x.meal === m);
+      if (ex) { taken.add(i + "|" + m); takenTxt.push(`hari ${i} ${m}: ${ex.dish}`); }
+    }
+    const stock = useStock.checked ? usableStock() : [];
+    const soon = stock.filter((s) => { const d = daysLeftOf(s); return d != null && d <= 7; }).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
+    const rest = stock.filter((s) => !soon.includes(s)).slice(0, 40);
+    const prompt = [
+      `Buat rencana menu ${n} hari. Hari 0 = ${startDate} (${dayName(startDate)}); lalu hari 1, 2, dst. berurutan.`,
+      `Waktu makan yang diisi tiap hari: ${meals.join(", ")}. Setiap hari semua waktu makan itu harus terisi, kecuali yang sudah terisi.`,
+      `Porsi: ${Math.max(1, Number(serv.value) || 4)} orang.`,
+      `Permintaan keluarga: ${wish.value.trim() || "menu rumahan sehari-hari yang bervariasi dan bergizi"}.`,
+      soon.length ? `Bahan yang HAMPIR KEDALUWARSA (pakai lebih dulu, di hari-hari awal): ${soon.map((s) => `${s.name} (kedaluwarsa ${s.expiry_date}, sisa ${Number(s.qty)}${s.unit ? " " + s.unit : ""})`).join("; ")}.` : "",
+      rest.length ? `Bahan lain yang masih ada di rumah: ${rest.map((s) => s.name).join(", ")}.` : "",
+      takenTxt.length ? `Jadwal yang sudah terisi (jangan dibuat ulang): ${takenTxt.join("; ")}.` : "",
+    ].filter(Boolean).join("\n");
+    go.disabled = true; go.textContent = "⏳ AI menyusun rencana…";
+    results.replaceChildren(h("div", { class: "spinner", "aria-label": "Memuat" }));
+    try {
+      const raw = await askAIJSON(WEEK_SYSTEM, prompt, { maxTokens: 7000, timeout: 180000 });
+      const plan = normWeek(raw, n, meals, taken);
+      if (!plan.length) throw new Error("AI tidak memberi rencana yang bisa dipakai. Coba lagi, atau kurangi jumlah hari.");
+      results.replaceChildren(planView(plan, startDate, soon));
+    } catch (err) {
+      results.replaceChildren(h("div", { class: "msg err" }, err.message));
+    } finally { go.disabled = false; go.textContent = "📆 Buat ulang rencana"; }
+  });
+
+  function planView(plan, startDate, soon) {
+    const on = plan.map(() => true);
+    const addShop = h("input", { type: "checkbox", checked: true });
+    const saveBtn = h("button", { class: "btn green block", type: "button" });
+    const upd = () => { const c = on.filter(Boolean).length; saveBtn.textContent = `💾 Simpan ${c} menu ke Menu Dapur`; saveBtn.disabled = !c; };
+    const out = [h("h3", { style: { margin: ".2rem 0 .8rem" } }, `Rencana ${plan.length} menu`)];
+    let curDay = -1;
+    plan.forEach((r, i) => {
+      if (r.day !== curDay) { curDay = r.day; const d = addDays(startDate, r.day); out.push(h("div", { class: "group-title" }, `${dayName(d)}, ${fmtShort(d)}`)); }
+      const useSoon = r.ingredients.some((g) => stockHit(g.name, soon));
+      const useStk = r.ingredients.filter((g) => stockHit(g.name, usableStock())).length;
+      out.push(h("article", { class: "box", style: { padding: ".7rem .8rem", boxShadow: "var(--sh-sm)", margin: ".5rem 0 .8rem", display: "flex", flexDirection: "column", gap: ".4rem" } },
+        h("div", { style: { display: "flex", gap: ".7rem", alignItems: "flex-start" } },
+          h("input", { type: "checkbox", checked: true, "aria-label": "Pilih " + r.dish, onchange: (e) => { on[i] = e.target.checked; upd(); } }),
+          h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { fontWeight: 700, overflowWrap: "anywhere" } }, r.dish),
+            h("div", { style: { display: "flex", flexWrap: "wrap", gap: ".4rem", marginTop: ".35rem" } }, chip(r.meal, "pink"), r.info ? chip(r.info) : null,
+              useSoon ? chip("♻ Pakai stok hampir kedaluwarsa", "orange") : useStk ? chip(`📦 ${useStk} bahan dari stok`, "green") : null))),
+        h("div", { class: "note", style: { fontSize: ".9rem", overflowWrap: "anywhere" } }, "🧂 " + (r.ingredients.map(ingLine).join(", ") || "—"))));
+    });
+    const need = shoppingFrom(plan, true).length;
+    saveBtn.addEventListener("click", async () => {
+      const chosen = plan.filter((_, i) => on[i]);
+      if (!chosen.length) return;
+      saveBtn.disabled = true;
+      try {
+        await insertMany("menus", chosen.map((r) => ({ dish: r.dish, date: addDays(startDate, r.day), meal: r.meal, ai: true, ingredients: r.ingredients.map(ingLine).join("\n"), steps: null, notes: r.info || null })));
+        toast(`${chosen.length} menu masuk ke Menu Dapur ✓`, "ok");
+        if (addShop.checked) await addToShopping(shoppingFrom(chosen, true));
+        close();
+      } catch (e) { console.error(e); toast(e?.message || "Gagal menyimpan", "err"); saveBtn.disabled = false; }
+    });
+    upd();
+    out.push(h("label", { class: "checks", style: { display: "flex", flexDirection: "row", alignItems: "center", gap: ".6rem", margin: ".6rem 0 1rem", cursor: "pointer" } }, addShop,
+      h("span", null, `Masukkan bahan ke Daftar Belanja (sekitar ${need} jenis, yang belum ada di Stok)`)), saveBtn);
+    return h("div", null, out);
+  }
+
+  box.append(form, results);
+  close = modal("📆 Rencana Menu Mingguan", box);
 }

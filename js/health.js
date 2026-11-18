@@ -1,6 +1,7 @@
 // Profil kesehatan, pengukuran berkala (berat, tekanan darah, gula darah, dll.) dan grafik tren.
 import { h, chip, today, fmtDate, fmtShort, emptyState, confirmBox } from "./ui.js";
 import { state, deleteRow, meMember } from "./data.js";
+import { planFor, needsAttention, monthsOf, ageLabel } from "./vaxcalc.js";
 import { ageOf, ageText, isAdult, bmiOf, bmiStatus, idealWeight, healthyRange, bpStatus, glucoseStatus, cholStatus, uricStatus,
   pulseStatus, waistStatus, validateMetric, GLUCOSE_CTX, BLOOD_TYPES } from "./healthcalc.js";
 
@@ -27,6 +28,7 @@ export const PROFILE = {
     { k: "blood_type", label: "Golongan darah", type: "select", options: [["", "— Belum diisi —"], ...BLOOD_TYPES], half: true },
     { k: "height_cm", label: "Tinggi badan (cm)", type: "number", half: true, min: 30, placeholder: "mis. 165" },
     { k: "insurance", label: "Nomor BPJS / asuransi", placeholder: "mis. BPJS 0001234567890" },
+    { k: "vax_catchup", label: "Pengingat imunisasi (anak < 18 th)", type: "select", options: [["", "Hanya yang sedang waktunya"], ["yes", "Ingatkan juga yang terlewat"]], hint: "Pilih yang kedua jika imunisasi anak belum lengkap." },
     { k: "notes", label: "Catatan khusus", type: "textarea", placeholder: "mis. Riwayat keluarga diabetes, hamil, pakai kacamata…" },
   ],
 };
@@ -96,15 +98,15 @@ function chart(title, unit, series, note) {
   const X = (t) => (t1 === t0 ? (L + W - R) / 2 : L + ((t - t0) / (t1 - t0)) * (W - L - R));
   const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Grafik ${title}`, style: "width:100%;height:auto;display:block" });
-  svg.append(s("line", { x1: L, y1: H - B, x2: W - R, y2: H - B, stroke: "#111", "stroke-width": 2 }), s("line", { x1: L, y1: T, x2: L, y2: H - B, stroke: "#111", "stroke-width": 2 }));
-  const txt = (x, y, t, anchor = "end") => { const e = s("text", { x, y, "text-anchor": anchor, "font-size": 10, "font-weight": 700, fill: "#111" }); e.textContent = t; return e; };
+  svg.append(s("line", { x1: L, y1: H - B, x2: W - R, y2: H - B, style: "stroke:var(--ink)", "stroke-width": 2 }), s("line", { x1: L, y1: T, x2: L, y2: H - B, style: "stroke:var(--ink)", "stroke-width": 2 }));
+  const txt = (x, y, t, anchor = "end") => { const e = s("text", { x, y, "text-anchor": anchor, "font-size": 10, "font-weight": 700, style: "fill:var(--text)" }); e.textContent = t; return e; };
   svg.append(txt(L - 4, T + 8, fnum(hi - pad)), txt(L - 4, H - B - 2, fnum(lo + pad)));
   const d0 = new Date(t0), d1 = new Date(t1), dm = (d) => d.toLocaleDateString("id-ID", { day: "numeric", month: "short" });
   svg.append(txt(L, H - 8, dm(d0), "start"));
   if (t1 !== t0) svg.append(txt(W - R, H - 8, dm(d1), "end"));
   for (const x of series) {
-    if (x.pts.length > 1) svg.append(s("polyline", { points: x.pts.map((p) => `${X(p.t)},${Y(p.v)}`).join(" "), fill: "none", stroke: "#111", "stroke-width": 3, "stroke-linejoin": "round" }));
-    for (const p of x.pts) svg.append(s("circle", { cx: X(p.t), cy: Y(p.v), r: 5, fill: x.color, stroke: "#111", "stroke-width": 2.5 }));
+    if (x.pts.length > 1) svg.append(s("polyline", { points: x.pts.map((p) => `${X(p.t)},${Y(p.v)}`).join(" "), fill: "none", style: "stroke:var(--ink)", "stroke-width": 3, "stroke-linejoin": "round" }));
+    for (const p of x.pts) svg.append(s("circle", { cx: X(p.t), cy: Y(p.v), r: 5, fill: x.color, style: "stroke:var(--ink)", "stroke-width": 2.5 }));
   }
   const last = series.map((x) => `${fnum(x.pts[x.pts.length - 1].v)}`).join("/");
   return h("div", { class: "box chart" },
@@ -176,6 +178,43 @@ function tile(label, text, status, sub) {
   return h("div", { class: "vital" }, h("small", null, label), h("b", null, text), status ? chip(status.label, status.tone) : null, sub ? h("small", { class: "sub" }, sub) : null);
 }
 
+const givenKeys = (person) => new Set(mine(state.data.health_records, person).map((r) => r.vax).filter(Boolean));
+const profilePlan = (p, age) => planFor(age, givenKeys(p.person), p.vax_catchup === "yes");
+
+// Imunisasi anak yang perlu perhatian (untuk Beranda).
+export function vaxAlerts() {
+  const out = [], t = today();
+  for (const p of state.data.health_profiles) {
+    const age = p.birth_date ? ageOf(p.birth_date, t) : null;
+    if (!age || isAdult(age)) continue;
+    for (const v of needsAttention(profilePlan(p, age))) out.push({ p, v, age });
+  }
+  const rank = { late: 0, now: 1, soon: 2 };
+  return out.sort((a, b) => rank[a.v.st.id] - rank[b.v.st.id] || a.v.at - b.v.at);
+}
+
+function vaxSection(p, age, deps) {
+  const plan = profilePlan(p, age), am = monthsOf(age), att = needsAttention(plan);
+  const done = plan.filter((x) => x.st.id === "given").length;
+  const recs = mine(state.data.health_records, p.person);
+  const give = (v) => {
+    const mod = { ...deps.recMod, key: "hvax", view: undefined, beforeSave: (o) => { o.vax = v.k; } };
+    deps.openForm(mod, null, { person: p.person, type: "Vaksinasi", title: v.name });
+  };
+  const rows = plan.filter((x) => x.st.id !== "future" || x.at - am <= 12);
+  return h("details", { class: "steps", open: att.length > 0 },
+    h("summary", null, `💉 Jadwal imunisasi (${done}/${plan.length} tercatat)${att.length ? ` · ${att.length} perlu perhatian` : ""}`),
+    h("div", { style: { display: "flex", flexDirection: "column", gap: ".4rem", marginTop: ".5rem" } },
+      rows.map((x) => {
+        const rec = x.st.id === "given" ? recs.find((r) => r.vax === x.k) : null;
+        return h("div", { class: "li" },
+          h("div", { class: "grow" }, h("b", null, x.name), h("small", null, rec?.date ? "Diberikan " + fmtShort(rec.date) : "Dianjurkan usia " + ageLabel(x.at))),
+          x.st.id === "given" ? chip("✓", "green") : chip(x.st.label, x.st.tone),
+          x.st.id === "given" ? null : h("button", { class: "btn sm green", type: "button", "aria-label": "Catat sudah " + x.name, onclick: () => give(x) }, "✓ Sudah"));
+      })),
+    h("p", { class: "disc", style: { margin: ".6rem 0 0" } }, "ℹ️ Mengacu rekomendasi IDAI 2023/2024. Jadwal tiap anak bisa berbeda, ikuti arahan dokter anak atau posyandu. “Belum tercatat” berarti belum ada catatan di aplikasi, bukan berarti terlewat."));
+}
+
 function profileCard(p, deps) {
   const { openForm, run } = deps;
   const age = ageOf(p.birth_date, today()), adult = isAdult(age);
@@ -228,6 +267,7 @@ function profileCard(p, deps) {
         p.insurance ? chip("🪪 " + p.insurance) : null))),
     tiles.length ? h("div", { class: "vitals" }, tiles) : h("div", { class: "note" }, "Belum ada pengukuran. Tekan “＋ Ukur” untuk mulai mencatat berat, tekanan darah, gula darah, dll."),
     age && !adult ? h("div", { class: "note" }, "👶 Untuk anak/remaja, status IMT dan tekanan darah dinilai memakai kurva khusus. Pantau di posyandu atau dokter anak.") : null,
+    age && !adult ? vaxSection(p, age, deps) : null,
     alerts.length ? h("div", { class: "meta" }, alerts) : null,
     p.notes ? h("div", { class: "note" }, p.notes) : null,
     h("div", { class: "acts" },

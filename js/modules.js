@@ -1,7 +1,7 @@
 // Definisi modul + tampilan daftar generik.
-import { h, chip, modal, confirmBox, toast, emptyState, today, addDays, addMonths, daysBetween, fmtDate, fmtShort, hhmm, relDay, waNumber } from "./ui.js";
+import { h, chip, copyText, modal, confirmBox, toast, emptyState, today, addDays, addMonths, daysBetween, fmtDate, fmtShort, hhmm, relDay, waNumber } from "./ui.js";
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
-import { openAIAdvisor, completeRecipe } from "./ai.js";
+import { openAIAdvisor, completeRecipe, openWeeklyPlanner } from "./ai.js";
 import { healthView } from "./health.js";
 import { assetModule } from "./assets.js";
 
@@ -250,6 +250,8 @@ export const MODULES = [
     view: (root) => {
       const rows = [...state.data.shopping_items].sort(by((r) => bool(r.done), (r) => r.created_at));
       const doneIds = rows.filter((r) => r.done).map((r) => r.id);
+      const todo = rows.filter((r) => !r.done);
+      const shareText = `🛒 Daftar belanja ${state.household?.name || ""}\n\n` + todo.map((r) => `☐ ${r.name}${r.qty ? " — " + r.qty : ""}`).join("\n") + "\n\nDari Omahku";
       const name = h("input", { type: "text", placeholder: "Tambah barang… (mis. Telur)", required: true, "aria-label": "Nama barang", autocomplete: "off", enterkeyhint: "done" });
       const qty = h("input", { type: "text", placeholder: "Jumlah", style: { maxWidth: "9rem" }, "aria-label": "Jumlah" });
       const form = h("form", { class: "box card", style: { flexDirection: "row", flexWrap: "wrap", gap: ".6rem", marginBottom: "1.2rem" },
@@ -263,7 +265,10 @@ export const MODULES = [
         h("div", { style: { flex: "1 1 220px" } }, name), qty, h("button", { class: "btn orange", type: "submit" }, "＋ Tambah"));
       root.append(
         h("div", { class: "page-head" }, h("h1", null, h("span", null, "🛒"), "Daftar Belanja", h("span", { class: "tag" }, String(rows.length - doneIds.length))),
-          doneIds.length ? h("button", { class: "btn white", type: "button", onclick: async () => { if (await confirmBox(`Hapus ${doneIds.length} barang yang sudah dibeli?`, "Ya, bersihkan")) run(() => deleteMany("shopping_items", doneIds), "Dibersihkan"); } }, `🧹 Bersihkan yang sudah dibeli (${doneIds.length})`) : null),
+          h("div", { class: "sos" }, todo.length ? [
+            h("a", { class: "btn green", href: "https://wa.me/?text=" + encodeURIComponent(shareText), target: "_blank", rel: "noopener" }, "📲 Kirim ke WhatsApp"),
+            h("button", { class: "btn white", type: "button", onclick: () => copyText(shareText) }, "📋 Salin")] : null,
+          doneIds.length ? h("button", { class: "btn white", type: "button", onclick: async () => { if (await confirmBox(`Hapus ${doneIds.length} barang yang sudah dibeli?`, "Ya, bersihkan")) run(() => deleteMany("shopping_items", doneIds), "Dibersihkan"); } }, `🧹 Bersihkan yang sudah dibeli (${doneIds.length})`) : null)),
         form);
       if (window.__refocusShopping) { window.__refocusShopping = false; setTimeout(() => name.focus(), 0); }
       if (!rows.length) { root.append(emptyState("🛒", "Daftar belanja kosong", "Tambah barang di atas, atau kirim dari halaman Stok dan Menu.")); return; }
@@ -335,11 +340,11 @@ export const MODULES = [
       { k: "notes", label: "Catatan", type: "textarea" },
     ],
     top: (root) => {
-      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "#F1E8FF" } },
+      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "var(--tint-lilac)" } },
         h("h3", null, "✨ Bingung mau masak apa?"),
         h("div", { class: "body" },
           h("p", { style: { fontSize: ".95rem" } }, "Minta AI membuatkan resep lengkap dengan bahan dan cara memasak. Hasilnya bisa langsung masuk ke Menu dan Daftar Belanja."),
-          h("div", null, h("button", { class: "btn lilac", type: "button", onclick: () => openAIAdvisor({ addToShopping }) }, "✨ Saran AI")))));
+          h("div", { class: "sos" }, h("button", { class: "btn lilac", type: "button", onclick: () => openAIAdvisor({ addToShopping }) }, "✨ Saran AI"), h("button", { class: "btn pink", type: "button", onclick: () => openWeeklyPlanner({ addToShopping }) }, "📆 Rencana 1 minggu")))));
     },
     filters: () => [[{ id: "up", label: "Mulai hari ini", test: (r) => r.date >= today() }, { id: "past", label: "Sebelumnya", test: (r) => r.date < today() }, { id: "all", label: "Semua" }]],
     sort: by((r) => r.date, (r) => MEALS.indexOf(r.meal)),
@@ -444,7 +449,7 @@ export const MODULES = [
     ],
     beforeSave: (o) => { o.is_primary = o.is_primary === "true" || o.is_primary === true; },
     top: (root) => {
-      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "#FFE3E3" } },
+      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "var(--tint-red)" } },
         h("h3", null, "📞 Nomor darurat nasional"),
         h("div", { class: "body" }, h("div", { class: "sos" }, [["112", "Darurat umum"], ["119", "Ambulans"], ["110", "Polisi"], ["113", "Pemadam"], ["115", "SAR"]].map(([n, l]) =>
           h("a", { class: "btn red call", href: "tel:" + n, "aria-label": `Telepon ${l} ${n}` }, `${n}`, h("small", { style: { fontWeight: 500 } }, l)))))));
@@ -481,7 +486,7 @@ export const MODULES = [
       const crit = rows.filter((r) => ["Alergi", "Kondisi / penyakit", "Obat rutin"].includes(r.type));
       if (!crit.length) return;
       const people = [...new Set(crit.map((r) => r.person))];
-      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "#E5FFEF" } },
+      root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem", background: "var(--tint-green)" } },
         h("h3", null, "⚕️ Ringkasan penting"),
         h("div", { class: "body" }, people.map((p) => h("div", { class: "li", style: { alignItems: "flex-start" } },
           h("b", null, p),

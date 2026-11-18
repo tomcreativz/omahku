@@ -4,13 +4,16 @@ import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, 
 import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
 import { assetAlerts } from "./assets.js";
+import { vaxAlerts } from "./health.js";
+import { ageLabel } from "./vaxcalc.js";
+import { getPref, setPref } from "./theme.js";
 
 const link = (to, text, cls = "btn sm white") => h("a", { class: cls, href: "#/" + to }, text);
 const panel = (title, color, to, ...body) =>
   h("section", { class: "box panel" },
     h("h3", { style: { background: `var(--${color})` } }, h("span", null, title), to ? link(to, "Lihat ›", "btn sm white more") : null),
     h("div", { class: "body" }, ...body));
-const none = (t) => h("div", { class: "note", style: { fontWeight: 700, color: "#555" } }, t);
+const none = (t) => h("div", { class: "note", style: { fontWeight: 700, color: "var(--muted)" } }, t);
 const li = (main, sub, right) => h("div", { class: "li" }, h("div", { class: "grow" }, main, sub ? h("small", null, sub) : null), right || null);
 
 // ============================================================
@@ -24,6 +27,7 @@ export function renderDashboard(root) {
   const low = D.stock_items.filter((r) => Number(r.qty) <= Number(r.min_qty));
   const expiring = D.stock_items.filter((r) => r.expiry_date && daysBetween(t, r.expiry_date) <= 14).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
   const alerts = assetAlerts(t);
+  const vax = vaxAlerts();
   const maint = D.maintenance.map((r) => ({ r, n: nextDue(r) })).filter((x) => x.n && daysBetween(t, x.n) <= 14).sort((a, b) => a.n.localeCompare(b.n));
   const goals = D.goals.filter((g) => progressOf(g) < 100).sort((a, b) => (a.target_date || "9").localeCompare(b.target_date || "9")).slice(0, 3);
   const followups = D.health_records.filter((r) => r.followup_date && daysBetween(t, r.followup_date) <= 30).sort((a, b) => a.followup_date.localeCompare(b.followup_date));
@@ -71,6 +75,10 @@ export function renderDashboard(root) {
       panel("🏍️ Pajak & servis aset", "blue", "assets",
         alerts.length ? alerts.slice(0, 6).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone)))
           : none(D.assets.length ? "Tidak ada pajak atau servis yang jatuh tempo dalam 30 hari. 👍" : "Catat motor atau mobil Anda agar pajak dan servis tidak terlewat.")),
+
+      panel("💉 Imunisasi anak", "pink", "health",
+        vax.length ? vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone)))
+          : none(D.health_profiles.some((p) => p.birth_date) ? "Tidak ada imunisasi yang perlu dikejar sekarang. 👍" : "Isi tanggal lahir anak di Profil Kesehatan untuk jadwal imunisasi.")),
 
       panel("🛠️ Perawatan segera", "orange", "maintenance",
         maint.length ? maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange"))) : none("Belum ada perawatan yang jatuh tempo dalam 14 hari.")),
@@ -135,7 +143,7 @@ export function renderSettings(root, { logout, onRenamed }) {
           const v = hhName.value.trim(); if (!v) throw new Error("Nama rumah tidak boleh kosong.");
           await renameHousehold(v); onRenamed();
         }, "Tersimpan ✓") }, "Simpan nama rumah"),
-        h("hr", { style: { border: "1.5px dashed #111", margin: ".8rem 0" } }),
+        h("hr", { style: { border: "1.5px dashed var(--ink)", margin: ".8rem 0" } }),
         h("b", null, "💌 Undang pasangan"),
         owner
           ? (full
@@ -164,6 +172,11 @@ export function renderSettings(root, { logout, onRenamed }) {
             await setPassword(pw.value, oldPw?.value); pw.value = ""; if (oldPw) oldPw.value = "";
           }, "Password diganti ✓") }, "Ganti password"),
           h("button", { class: "btn red", type: "button", onclick: logout }, "Keluar"))),
+
+      h("section", { class: "box card" }, h("h3", null, "🎨 Tampilan"),
+        h("div", { class: "filters", role: "group", "aria-label": "Tema" }, [["auto", "Otomatis"], ["light", "☀️ Terang"], ["dark", "🌙 Gelap"]].map(([id, label]) =>
+          h("button", { type: "button", class: getPref() === id ? "on" : "", onclick: () => setPref(id) }, label))),
+        h("div", { class: "note" }, "Otomatis mengikuti pengaturan HP atau komputer. Pilihan ini hanya berlaku di perangkat ini.")),
 
       h("section", { class: "box card" }, h("h3", null, "📲 Aplikasi & cadangan"),
         installBtn,

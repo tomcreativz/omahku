@@ -3,6 +3,8 @@ import { h, $, toast } from "./ui.js";
 import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold } from "./data.js";
 import { MODULES, modByKey, renderModule } from "./modules.js";
 import { renderDashboard, renderSettings, renderMore } from "./pages.js";
+import { themeButton } from "./theme.js";
+import { openSearch } from "./search.js";
 
 const app = $("#app");
 document.title = `${CONFIG.APP_NAME} — urusan rumah, tertata`;
@@ -162,9 +164,12 @@ let main, side, tabbar, topbarName, unsub;
 function showApp() {
   const navLinks = NAV.map((n) => h("a", { href: "#/" + n.to, "data-to": n.to }, h("span", { class: "ico" }, n.icon), n.label));
   side = h("aside", { class: "side", "aria-label": "Menu utama" }, logo(),
+    h("button", { class: "btn white block", type: "button", onclick: openSearch }, "🔍 Cari… ", h("small", { style: { fontWeight: 500 } }, "Ctrl+K")),
     h("nav", { class: "nav" }, navLinks),
-    h("div", { class: "who" }, h("small", null, "Masuk sebagai"), h("b", { id: "who-name" }, ""), h("small", { id: "who-house" }, "")));
-  const top = h("header", { class: "topbar" }, logo(), h("a", { class: "btn sm white", href: "#/pengaturan", "aria-label": "Pengaturan" }, h("span", { id: "top-name" }, ""), " ⚙️"));
+    h("div", { class: "who" }, h("small", null, "Masuk sebagai"), h("b", { id: "who-name" }, ""), h("small", { id: "who-house" }, ""), h("div", { style: { marginTop: ".5rem" } }, themeButton())));
+  const top = h("header", { class: "topbar" }, logo(), h("div", { class: "sos", style: { gap: ".4rem", flexWrap: "nowrap" } },
+    h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Cari", onclick: openSearch }, "🔍"), themeButton(),
+    h("a", { class: "btn sm white", href: "#/pengaturan", "aria-label": "Pengaturan" }, h("span", { id: "top-name" }, ""), " ⚙️")));
   tabbar = h("nav", { class: "tabbar", "aria-label": "Menu utama" },
     ...TABS.map((to) => { const n = NAV.find((x) => x.to === to); return h("a", { href: "#/" + to, "data-to": to }, h("span", { class: "ico" }, n.icon), n.label); }),
     h("a", { href: "#/lainnya", "data-to": "lainnya" }, h("span", { class: "ico" }, "☰"), "Lainnya"));
@@ -189,6 +194,12 @@ const currentRoute = () => {
 let raf = 0;
 function schedule() { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => render(false)); }
 document.addEventListener("rt:rerender", schedule);
+addEventListener("keydown", (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if (!state.household || document.querySelector(".overlay")) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); }
+  else if (e.key === "/" && !typing && !e.ctrlKey && !e.metaKey) { e.preventDefault(); openSearch(); }
+});
 addEventListener("hashchange", () => state.household && render(true));
 
 function render(navigated) {
