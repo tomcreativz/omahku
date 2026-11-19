@@ -117,9 +117,15 @@ function markTaskDone(r) { modByKey.tasks.card(r, { patch: (row, p, m) => run(()
 
 // ============================================================
 export function renderMore(root) {
-  const items = [["", "🏠", "Beranda", "yellow"], ...MODULES.map((m) => [m.key, m.icon, m.nav, m.color]), ["pengaturan", "⚙️", "Pengaturan", "white"]];
+  const GROUPS = [["Harian", ["agenda", "tasks", "shopping"]], ["Rumah", ["stock", "menu", "clothes", "maintenance", "assets"]], ["Keluarga", ["goals", "contacts", "health"]]];
+  const known = new Set(GROUPS.flatMap(([, k]) => k));
+  const tile = ([to, ico, label, color]) => h("a", { href: "#/" + to, style: `--c:var(--${color})` }, h("span", { class: "ico" }, ico), h("span", { class: "lb" }, label));
+  const mod = (k) => { const m = MODULES.find((x) => x.key === k); return m ? [m.key, m.icon, m.nav, m.color] : null; };
+  const extra = MODULES.filter((m) => !known.has(m.key)).map((m) => [m.key, m.icon, m.nav, m.color]);
+  const sections = GROUPS.map(([name, keys], i) => [name, [...keys.map(mod).filter(Boolean), ...(i === 1 ? extra : [])]]);
+  sections.push(["Akun", [["pengaturan", "⚙️", "Pengaturan", "white"]]]);
   root.append(h("div", { class: "page-head" }, h("h1", null, "Semua menu")),
-    h("div", { class: "menu-grid" }, items.map(([to, ico, label, color]) => h("a", { href: "#/" + to, style: { background: `var(--${color})` } }, h("span", { class: "ico" }, ico), label))));
+    ...sections.flatMap(([name, items]) => [h("div", { class: "nav-label more-label" }, name), h("div", { class: "menu-grid" }, items.map(tile))]));
 }
 
 // ============================================================
