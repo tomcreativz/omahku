@@ -3,6 +3,8 @@ import { h, chip, copyText, modal, confirmBox, toast, emptyState, today, addDays
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
 import { openAIAdvisor, completeRecipe, openWeeklyPlanner } from "./ai.js";
 import { healthView } from "./health.js";
+import { openStockIn, openCook, undoCook } from "./kitchenui.js";
+import { availability, candidates, qtyText, STOCK_CATS } from "./kitchen.js";
 import { assetModule, serviceTools, serviceAssets } from "./assets.js";
 import { CATS, CAT_ICON, TYPES, CONDITIONS, STATUS, RELEASE, IDLE_DAYS, isGone, isIdle, idleDays, idleText, summarize, piecesOf, idleList } from "./clothes.js";
 
@@ -437,6 +439,7 @@ export const MODULES = [
           h("div", { class: "sos" }, todo.length ? [
             h("a", { class: "btn green", href: "https://wa.me/?text=" + encodeURIComponent(shareText), target: "_blank", rel: "noopener" }, "📲 Kirim ke WhatsApp"),
             h("button", { class: "btn white", type: "button", onclick: () => copyText(shareText) }, "📋 Salin")] : null,
+          doneIds.length ? h("button", { class: "btn green", type: "button", onclick: () => openStockIn({ run }) }, `📦 Pindahkan ke stok (${doneIds.length})`) : null,
           doneIds.length ? h("button", { class: "btn white", type: "button", onclick: async () => { if (await confirmBox(`Hapus ${doneIds.length} barang yang sudah dibeli?`, "Ya, bersihkan")) run(() => deleteMany("shopping_items", doneIds), "Dibersihkan"); } }, `🧹 Bersihkan yang sudah dibeli (${doneIds.length})`) : null)),
         form);
       if (window.__refocusShopping) { window.__refocusShopping = false; setTimeout(() => name.focus(), 0); }
@@ -452,10 +455,12 @@ export const MODULES = [
       for (const r of rows) {
         grid.append(h("div", { class: "box li", style: { boxShadow: "var(--sh-sm)", opacity: r.done ? 0.6 : 1 } },
           h("input", { type: "checkbox", checked: r.done, "aria-label": "Sudah dibeli: " + r.name, onchange: (e) => run(() => updateRow("shopping_items", r.id, { done: e.target.checked })) }),
-          h("div", { class: "grow", style: { textDecoration: r.done ? "line-through" : "none", fontWeight: 700 } }, r.name, r.qty ? h("small", null, r.qty) : null),
+          h("div", { class: "grow", style: { textDecoration: r.done ? "line-through" : "none", fontWeight: 700 } }, r.name, r.qty ? h("small", null, r.qty) : null,
+            (() => { const st = !r.done && candidates(r.name, state.data.stock_items)[0]; return st ? h("small", { style: { textDecoration: "none" } }, `📦 di stok: ${qtyText(Number(st.qty) || 0, st.unit)}`) : null; })()),
           h("input", { type: "text", inputmode: "numeric", placeholder: "Rp", value: priceOf(r) != null ? Math.round(priceOf(r)).toLocaleString("id-ID") : "", "aria-label": "Harga " + r.name, autocomplete: "off", style: { width: "7.5rem", minHeight: "40px", padding: ".3rem .5rem", textAlign: "right" },
             onfocus: (e) => e.target.select(),
             onchange: (e) => { const v = parsePrice(e.target.value); if (v === priceOf(r)) { e.target.value = v != null ? v.toLocaleString("id-ID") : ""; return; } run(() => updateRow("shopping_items", r.id, { price: v })); } }),
+          r.done ? h("button", { class: "btn sm green icon-btn", type: "button", "aria-label": "Pindahkan ke stok: " + r.name, title: "Pindahkan ke stok", onclick: () => openStockIn({ run }, [r]) }, "📦") : null,
           h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Hapus " + r.name, onclick: () => run(() => deleteRow("shopping_items", r.id)) }, "✕")));
       }
       root.append(grid);
@@ -471,7 +476,7 @@ export const MODULES = [
       { k: "qty", label: "Jumlah sekarang", type: "number", required: true, half: true, default: 1, min: 0 },
       { k: "min_qty", label: "Batas menipis", type: "number", half: true, default: 1, min: 0, hint: "Tandai menipis jika ≤ angka ini" },
       { k: "unit", label: "Satuan", placeholder: "pcs, kg, liter…", half: true },
-      { k: "category", label: "Kategori", type: "select", options: ["Makanan & minuman", "Dapur", "Kebersihan", "Mandi & perawatan", "Bayi & anak", "Obat", "Lainnya"], half: true, default: "Makanan & minuman" },
+      { k: "category", label: "Kategori", type: "select", options: STOCK_CATS, half: true, default: "Makanan & minuman" },
       { k: "expiry_date", label: "Tanggal kedaluwarsa", type: "date", hint: "Kosongkan jika tidak ada. Jika ada beberapa kemasan, isi yang paling cepat kedaluwarsa." },
     ],
     beforeSave: (o) => { o.qty ??= 0; o.min_qty ??= 0; },
@@ -531,16 +536,22 @@ export const MODULES = [
     card: (r) => {
       const items = splitItems(r.ingredients);
       const steps = (r.steps || "").split("\n").map((x) => x.trim().replace(/^\d+\s*[.)]\s*/, "")).filter(Boolean);
+      const av = !r.cooked && items.length ? availability(r.ingredients, state.data.stock_items) : null;
+      const kitchen = { run, addToShopping };
       return {
-        title: r.dish, color: "pink",
-        meta: [r.meal ? chip(r.meal, "pink") : null, r.ai ? chip("✨ AI", "lilac") : null],
+        title: r.dish, color: r.cooked ? "green" : "pink",
+        meta: [r.meal ? chip(r.meal, "pink") : null, r.ai ? chip("✨ AI", "lilac") : null,
+          r.cooked ? chip(`✅ Dimasak${r.cooked_on ? " " + fmtShort(r.cooked_on) : ""}`, "green") : null,
+          av ? (av.missing.length ? chip(`🧂 ${av.ok}/${av.total} bahan ada di stok`, "orange") : chip("✅ Semua bahan ada di stok", "green")) : null],
         body: [
           items.length ? h("div", { class: "note" }, "🧂 " + items.join(", ")) : null,
           steps.length ? h("details", { class: "steps" }, h("summary", null, `👩‍🍳 Cara memasak (${steps.length} langkah)`), h("ol", null, steps.map((x) => h("li", null, x)))) : null,
+          av && av.missing.length ? h("div", { class: "note" }, "🛒 Perlu dibeli: " + av.missing.map((m) => m.name).join(", ")) : null,
           r.notes ? h("div", { class: "note" }, r.notes) : null,
         ],
         actions: [
-          items.length ? h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(items.map((n) => ({ name: n }))) }, "🛒 Bahan ke belanja") : null,
+          !r.cooked ? h("button", { class: "btn sm green", type: "button", onclick: () => openCook(kitchen, r) }, "🍳 Sudah dimasak") : h("button", { class: "btn sm white", type: "button", onclick: () => undoCook(kitchen, r) }, "↩ Batalkan"),
+          av && av.missing.length ? h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(av.missing.map((m) => ({ name: m.name, qty: qtyText(m.n, m.unit) || null }))) }, "🛒 Bahan kurang ke belanja") : null,
           !steps.length ? h("button", { class: "btn sm lilac", type: "button", onclick: (e) => completeRecipe(r, { addToShopping }, e.currentTarget) }, "✨ Resep AI") : null,
         ],
       };
