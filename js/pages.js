@@ -4,6 +4,8 @@ import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, 
 import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
 import { assetAlerts, serviceAlerts } from "./assets.js";
+import { isLocked, lockSettings } from "./lock.js";
+import { docAlerts } from "./documents.js";
 import { summarize, piecesOf } from "./clothes.js";
 import { vaxAlerts } from "./health.js";
 import { ageLabel } from "./vaxcalc.js";
@@ -14,6 +16,7 @@ const panel = (title, color, to, ...body) =>
   h("section", { class: "box panel" },
     h("h3", { style: { background: `var(--${color})` } }, h("span", null, title), to ? link(to, "Lihat ›", "btn sm white more") : null),
     h("div", { class: "body" }, ...body));
+const lockedNote = () => h("div", { class: "note", style: { fontWeight: 700 } }, "🔒 Terkunci. Buka menunya dan masukkan PIN untuk melihat.");
 const none = (t) => h("div", { class: "note", style: { fontWeight: 700, color: "var(--muted)" } }, t);
 const li = (main, sub, right) => h("div", { class: "li" }, h("div", { class: "grow" }, main, sub ? h("small", null, sub) : null), right || null);
 
@@ -29,6 +32,7 @@ export function renderDashboard(root) {
   const expiring = D.stock_items.filter((r) => r.expiry_date && daysBetween(t, r.expiry_date) <= 14).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
   const alerts = assetAlerts(t);
   const svcAl = serviceAlerts(t);
+  const docAl = docAlerts(t);
   const vax = vaxAlerts();
   const maint = D.maintenance.map((r) => ({ r, n: nextDue(r) })).filter((x) => x.n && daysBetween(t, x.n) <= 14).sort((a, b) => a.n.localeCompare(b.n));
   const goals = D.goals.filter((g) => progressOf(g) < 100).sort((a, b) => (a.target_date || "9").localeCompare(b.target_date || "9")).slice(0, 3);
@@ -74,12 +78,14 @@ export function renderDashboard(root) {
         expiring.length ? expiring.slice(0, 6).map((r) => { const n = daysBetween(t, r.expiry_date); return li(r.name, `${fmtDate(r.expiry_date)}${r.qty != null ? " · sisa " + Number(r.qty) + (r.unit ? " " + r.unit : "") : ""}`, chip(n < 0 ? `Lewat ${-n} hari` : relDay(r.expiry_date), n < 0 ? "red" : n <= 3 ? "red" : "orange")); })
           : none(D.stock_items.some((r) => r.expiry_date) ? "Tidak ada yang kedaluwarsa dalam 14 hari. 👍" : "Isi tanggal kedaluwarsa di Stok agar tidak ada makanan yang terlewat.")),
 
-      panel("🏍️ Pajak & dokumen aset", "blue", "assets",
-        alerts.length ? alerts.slice(0, 6).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone)))
-          : none(D.assets.length ? "Tidak ada pajak atau dokumen yang jatuh tempo dalam 30 hari. 👍" : "Catat motor atau mobil Anda agar pajak dan STNK tidak terlewat.")),
+      panel("🏍️ Pajak & dokumen", "blue", "assets",
+        isLocked("assets") ? lockedNote() : (alerts.length || docAl.length)
+          ? [...alerts.slice(0, 4).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone))),
+             ...docAl.slice(0, 4).map(({ d, st }) => li(`📄 ${d.name}${d.person ? " · " + d.person : ""}`, `Berlaku sampai ${fmtDate(d.expiry_date)}`, chip(st.text, st.tone)))]
+          : none(D.assets.length || D.documents.length ? "Tidak ada pajak atau dokumen yang jatuh tempo. 👍" : "Catat motor, mobil, dan dokumen penting agar pajak dan masa berlakunya tidak terlewat.")),
 
       panel("💉 Imunisasi anak", "pink", "health",
-        vax.length ? vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone)))
+        isLocked("health") ? lockedNote() : vax.length ? vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone)))
           : none(D.health_profiles.some((p) => p.birth_date) ? "Tidak ada imunisasi yang perlu dikejar sekarang. 👍" : "Isi tanggal lahir anak di Profil Kesehatan untuk jadwal imunisasi.")),
 
       panel("🛠️ Perawatan segera", "orange", "maintenance",
@@ -121,7 +127,7 @@ export function renderMore(root) {
   const known = new Set(GROUPS.flatMap(([, k]) => k));
   const tile = ([to, ico, label, color]) => h("a", { href: "#/" + to, style: `--c:var(--${color})` }, h("span", { class: "ico" }, ico), h("span", { class: "lb" }, label));
   const mod = (k) => { const m = MODULES.find((x) => x.key === k); return m ? [m.key, m.icon, m.nav, m.color] : null; };
-  const extra = MODULES.filter((m) => !known.has(m.key)).map((m) => [m.key, m.icon, m.nav, m.color]);
+  const extra = MODULES.filter((m) => !m.hidden && !known.has(m.key)).map((m) => [m.key, m.icon, m.nav, m.color]);
   const sections = GROUPS.map(([name, keys], i) => [name, [...keys.map(mod).filter(Boolean), ...(i === 1 ? extra : [])]]);
   sections.push(["Akun", [["pengaturan", "⚙️", "Pengaturan", "white"]]]);
   root.append(h("div", { class: "page-head" }, h("h1", null, "Semua menu")),
@@ -192,6 +198,8 @@ export function renderSettings(root, { logout, onRenamed }) {
             await setPassword(pw.value, oldPw?.value); pw.value = ""; if (oldPw) oldPw.value = "";
           }, "Password diganti ✓") }, "Ganti password"),
           h("button", { class: "btn red", type: "button", onclick: logout }, "Keluar"))),
+
+      lockSettings(),
 
       h("section", { class: "box card" }, h("h3", null, "🎨 Tampilan"),
         h("div", { class: "filters", role: "group", "aria-label": "Tema" }, [["auto", "Otomatis"], ["light", "☀️ Terang"], ["dark", "🌙 Gelap"]].map(([id, label]) =>

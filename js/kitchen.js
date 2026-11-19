@@ -114,3 +114,40 @@ export function planStockIn(entry, stock) {
 
 export const STOCK_CATS = ["Makanan & minuman", "Dapur", "Kebersihan", "Mandi & perawatan", "Bayi & anak", "Obat", "Lainnya"];
 export const qtyText = (n, unit) => (n == null ? "" : `${round(n)}${unit ? " " + unit : ""}`);
+
+// ---- saran belanja otomatis ----
+const dayDiff = (to, from) => Math.round((new Date(to + "T00:00:00") - new Date(from + "T00:00:00")) / 864e5);
+// Gabungan: stok habis/menipis, stok kedaluwarsa, dan bahan menu `days` hari ke depan yang belum ada di stok.
+export function suggestShopping({ stock, menus, shopping, now, days = 7 }) {
+  const out = [];
+  const add = (name, qty, reason, kind) => {
+    const hit = out.find((o) => nameScore(o.name, name) >= 60), q = parseQty(qty);
+    if (hit) {
+      if (!hit.reasons.includes(reason)) hit.reasons.push(reason);
+      if (kind === "menu" && qty) {
+        const cv = hit.n != null && q.n != null ? convert(q.n, q.unit, hit.u) : null;
+        if (cv != null) { hit.n = round(hit.n + cv); hit.qty = qtyText(hit.n, hit.u); } else { hit.qty = hit.qty ? `${hit.qty} + ${qty}` : qty; hit.n = null; }
+      }
+      hit.rank = Math.min(hit.rank, RANK[kind]); return;
+    }
+    out.push({ name, qty: qty || null, n: q.n, u: q.unit, reasons: [reason], kind, rank: RANK[kind] });
+  };
+  const RANK = { out: 0, menu: 1, low: 2, expired: 3 };
+  for (const m of menus) {
+    if (m.cooked || !m.date || m.date < now || dayDiff(m.date, now) > days) continue;
+    for (const p of planCook(m.ingredients, stock)) {
+      if (p.enough) continue;
+      let qty = p.ing.n != null ? qtyText(p.ing.n, p.ing.unit) : "";
+      if (p.stock && p.use != null) { const lack = round(p.use - (Number(p.stock.qty) || 0)); qty = lack > 0 ? qtyText(lack, p.stock.unit) : ""; }
+      add(p.ing.name, qty, `Menu ${m.dish}`, "menu");
+    }
+  }
+  for (const s of stock) {
+    const q = Number(s.qty) || 0, min = Number(s.min_qty) || 0;
+    if (q <= 0) add(s.name, "", "Stok habis", "out");
+    else if (q <= min) add(s.name, "", `Stok menipis (sisa ${qtyText(q, s.unit)})`, "low");
+    else if (s.expiry_date && s.expiry_date < now) add(s.name, "", "Sudah kedaluwarsa, perlu pengganti", "expired");
+  }
+  const todo = shopping; // yang sudah dicentang dibeli tapi belum dipindah ke stok juga dianggap sudah tertangani
+  return out.filter((o) => !todo.some((t) => nameScore(t.name, o.name) >= 60)).sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+}

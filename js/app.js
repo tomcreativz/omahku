@@ -5,6 +5,7 @@ import { MODULES, modByKey, renderModule } from "./modules.js";
 import { renderDashboard, renderSettings, renderMore } from "./pages.js";
 import { themeButton } from "./theme.js";
 import { openSearch } from "./search.js";
+import { keyForRoute, isLocked, renderLockScreen, hasPin, touch, lockSignature, clearPin } from "./lock.js";
 
 const app = $("#app");
 document.title = `${CONFIG.APP_NAME} — urusan rumah, tertata`;
@@ -155,7 +156,7 @@ function showFatal(e) {
 // ============================================================
 const NAV = [
   { to: "", icon: "🏠", label: "Beranda", color: "yellow" },
-  ...MODULES.map((m) => ({ to: m.key, icon: m.icon, label: m.nav, color: m.color })),
+  ...MODULES.filter((m) => !m.hidden).map((m) => ({ to: m.key, icon: m.icon, label: m.nav, color: m.color })),
   { to: "pengaturan", icon: "⚙️", label: "Pengaturan" },
 ];
 const TABS = ["", "agenda", "tasks", "shopping"];
@@ -214,18 +215,21 @@ function render(navigated) {
   const y = window.scrollY;
   const route = currentRoute();
   main.replaceChildren();
+  const lk = keyForRoute(route);
   try {
-    if (route === "") renderDashboard(main);
+    if (lk && isLocked(lk)) renderLockScreen(main, lk, { logout, onUnlock: () => { toast("Terbuka 🔓"); lockSig = lockSignature(); render(true); } });
+    else if (route === "") renderDashboard(main);
     else if (route === "lainnya") renderMore(main);
     else if (route === "pengaturan") renderSettings(main, { logout, onRenamed: () => { setNames(); schedule(); } });
     else if (modByKey[route]) renderModule(modByKey[route], main);
     else { location.hash = "#/"; return; }
+    if (lk && !hasPin() && !localStorage.getItem("omahku_pin_hint_off")) main.prepend(pinHint());
   } catch (e) {
     console.error(e);
     main.replaceChildren(h("div", { class: "box card" }, h("h2", null, "Ups, ada yang salah"), h("div", { class: "msg err" }, String(e?.message || e))));
   }
   document.querySelectorAll("[data-to]").forEach((el) => {
-    const on = el.dataset.to === route || (route === "lainnya" && el.dataset.to === "lainnya");
+    const on = el.dataset.to === route || (route === "documents" && el.dataset.to === "assets") || (route === "lainnya" && el.dataset.to === "lainnya");
     el.classList.toggle("on", on); on ? el.setAttribute("aria-current", "page") : el.removeAttribute("aria-current");
   });
   if (navigated) { window.scrollTo(0, 0); } else window.scrollTo(0, y);
@@ -250,7 +254,27 @@ export function enter() {
   return entering;
 }
 
+// Pengingat kecil untuk mengaktifkan PIN di menu penting.
+function pinHint() {
+  const box = h("div", { class: "box card", style: { flexDirection: "row", alignItems: "center", gap: ".6rem", flexWrap: "wrap", padding: ".6rem .9rem", marginBottom: "1rem", background: "var(--tint-yellow, var(--soft))" } },
+    h("span", { style: { flex: 1, minWidth: "12rem" } }, "🔓 Menu ini belum dilindungi PIN. Aktifkan agar data penting tidak terbuka saat HP dipinjam."),
+    h("a", { class: "btn sm yellow", href: "#/pengaturan" }, "Aktifkan PIN"),
+    h("button", { class: "btn sm white", type: "button", onclick: () => { try { localStorage.setItem("omahku_pin_hint_off", "1"); } catch { /* abaikan */ } box.remove(); } }, "Nanti saja"));
+  return box;
+}
+
+// Perpanjang waktu buka selama dipakai; kunci kembali otomatis saat tidak aktif.
+["pointerdown", "keydown", "scroll"].forEach((ev) => addEventListener(ev, () => { if (state.household) touch(); }, { passive: true, capture: true }));
+let lockSig = "";
+setInterval(() => {
+  if (!state.household || !main?.isConnected) return;
+  const sig = lockSignature();
+  if (lockSig && sig !== lockSig) { document.querySelectorAll(".overlay").forEach((o) => o.remove()); document.body.style.overflow = ""; render(true); }
+  lockSig = sig;
+}, 5000);
+
 async function logout() {
+  clearPin(state.user?.id);
   unsubscribe(); await signOut();
   state.user = null; state.household = null; state.loaded = false; state.members = []; state.pending = [];
   toast("Sampai jumpa! 👋"); enter();

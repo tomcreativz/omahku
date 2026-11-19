@@ -3,9 +3,10 @@ import { h, chip, copyText, modal, confirmBox, toast, emptyState, today, addDays
 import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRow, deleteMany } from "./data.js";
 import { openAIAdvisor, completeRecipe, openWeeklyPlanner } from "./ai.js";
 import { healthView } from "./health.js";
-import { openStockIn, openCook, undoCook } from "./kitchenui.js";
+import { openStockIn, openCook, undoCook, openSuggest, shoppingSuggestions } from "./kitchenui.js";
 import { availability, candidates, qtyText, STOCK_CATS } from "./kitchen.js";
 import { assetModule, serviceTools, serviceAssets } from "./assets.js";
+import { documentModule, docTabs } from "./documents.js";
 import { CATS, CAT_ICON, TYPES, CONDITIONS, STATUS, RELEASE, IDLE_DAYS, isGone, isIdle, idleDays, idleText, summarize, piecesOf, idleList } from "./clothes.js";
 
 export async function run(fn, okMsg) {
@@ -439,6 +440,7 @@ export const MODULES = [
           h("div", { class: "sos" }, todo.length ? [
             h("a", { class: "btn green", href: "https://wa.me/?text=" + encodeURIComponent(shareText), target: "_blank", rel: "noopener" }, "📲 Kirim ke WhatsApp"),
             h("button", { class: "btn white", type: "button", onclick: () => copyText(shareText) }, "📋 Salin")] : null,
+          h("button", { class: "btn orange", type: "button", onclick: () => openSuggest({ addToShopping }) }, `💡 Saran belanja${shoppingSuggestions().length ? " (" + shoppingSuggestions().length + ")" : ""}`),
           doneIds.length ? h("button", { class: "btn green", type: "button", onclick: () => openStockIn({ run }) }, `📦 Pindahkan ke stok (${doneIds.length})`) : null,
           doneIds.length ? h("button", { class: "btn white", type: "button", onclick: async () => { if (await confirmBox(`Hapus ${doneIds.length} barang yang sudah dibeli?`, "Ya, bersihkan")) run(() => deleteMany("shopping_items", doneIds), "Dibersihkan"); } }, `🧹 Bersihkan yang sudah dibeli (${doneIds.length})`) : null)),
         form);
@@ -654,7 +656,8 @@ export const MODULES = [
   },
 
   // ---------------- Aset ----------------
-  assetModule({ openForm, run }),
+  (() => { const m = assetModule({ openForm, run }); const t = m.top; return { ...m, top: (root, rows) => { root.append(docTabs("assets")); t?.(root, rows); } }; })(),
+  documentModule({ openForm }),
 
   // ---------------- Target ----------------
   {

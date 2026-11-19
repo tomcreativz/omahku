@@ -3,6 +3,7 @@ import { h, modal, emptyState } from "./ui.js";
 import { state } from "./data.js";
 import { MODULES } from "./modules.js";
 import { PROFILE, METRIC } from "./health.js";
+import { tableLocked, hasPin } from "./lock.js";
 
 const SVC_FIELDS = [{ k: "what", label: "Pekerjaan" }, { k: "workshop", label: "Bengkel" }, { k: "notes", label: "Catatan" }];
 
@@ -26,6 +27,7 @@ export function searchAll(query) {
   if (!terms.length) return [];
   const out = [];
   for (const src of sources()) {
+    if (tableLocked(src.table)) continue; // menu terkunci PIN tidak ikut dicari
     for (const r of state.data[src.table] || []) {
       const parts = src.fields.map((f) => ({ label: f.label, k: f.k, text: valueOf(r[f.k]) })).filter((x) => x.text);
       const hay = fold(parts.map((x) => x.text).join(" \n "));
@@ -53,11 +55,13 @@ export function openSearch() {
     const q = input.value.trim();
     if (!q) { list.replaceChildren(h("div", { class: "note", style: { color: "var(--muted)" } }, "Ketik kata kunci. Pencarian mencakup agenda, tugas, belanja, stok, menu, aset, kesehatan, kontak, dan lainnya.")); return; }
     const res = searchAll(q);
-    if (!res.length) { list.replaceChildren(emptyState("🔍", "Tidak ditemukan", `Tidak ada hasil untuk “${q}”.`)); return; }
+    const lockNote = tableLocked("health_records") || tableLocked("assets") ? h("div", { class: "note", style: { color: "var(--muted)" } }, "🔒 Data Kesehatan, Aset, dan Dokumen tidak ikut dicari selama terkunci. Buka menunya dulu dengan PIN.") : null;
+    if (!res.length) { list.replaceChildren(emptyState("🔍", "Tidak ditemukan", `Tidak ada hasil untuk “${q}”.`), ...(lockNote ? [lockNote] : [])); return; }
     const items = res.map((r) => h("a", { class: "li", href: "#/" + r.route, style: { textDecoration: "none" }, onclick: () => close() },
       h("span", { style: { fontSize: "1.4rem" } }, r.icon),
       h("div", { class: "grow" }, h("b", null, r.title), h("small", null, r.label + (r.snippet ? " · " + r.snippet : "")))));
     if (res.length >= 40) items.push(h("div", { class: "note" }, "Menampilkan 40 hasil pertama. Perjelas kata kuncinya."));
+    if (lockNote) items.push(lockNote);
     list.replaceChildren(...items);
   };
   input.addEventListener("input", draw);

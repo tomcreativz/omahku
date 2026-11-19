@@ -142,3 +142,26 @@ export async function undoCook({ run }, menu) {
     await updateRow("menus", menu.id, { cooked: false, cooked_on: null, cooked_log: null });
   }, "Dibatalkan. Stok dikembalikan.");
 }
+
+// ---------------------------------------------------------------
+// Saran belanja otomatis
+// ---------------------------------------------------------------
+import { suggestShopping } from "./kitchen.js";
+export const shoppingSuggestions = () => suggestShopping({ stock: state.data.stock_items, menus: state.data.menus, shopping: state.data.shopping_items, now: today(), days: 7 });
+
+export function openSuggest({ addToShopping }) {
+  const list = shoppingSuggestions();
+  if (!list.length) return toast("Tidak ada saran: stok aman dan bahan menu 7 hari ke depan sudah ada. 👍");
+  const boxes = list.map((s) => ({ s, c: h("input", { type: "checkbox", checked: true, "aria-label": "Tambah " + s.name }) }));
+  let close;
+  const count = h("span", null, String(list.length));
+  const upd = () => { count.textContent = String(boxes.filter((b) => b.c.checked).length); };
+  boxes.forEach((b) => b.c.addEventListener("change", upd));
+  close = modal("💡 Saran belanja", h("div", { style: { display: "flex", flexDirection: "column", gap: ".6rem" } },
+    h("p", { class: "hint" }, "Disusun dari stok yang habis atau menipis, bahan menu 7 hari ke depan yang belum ada, dan stok kedaluwarsa. Hapus centang untuk yang tidak perlu."),
+    ...boxes.map(({ s, c }) => h("label", { class: "box li", style: { cursor: "pointer", flexDirection: "row" } }, c,
+      h("div", { class: "grow" }, h("b", null, s.name + (s.qty ? ` · ${s.qty}` : "")), h("small", null, s.reasons.join(" · "))))),
+    h("div", { class: "foot" },
+      h("button", { class: "btn white", type: "button", onclick: () => { const all = boxes.every((b) => b.c.checked); boxes.forEach((b) => (b.c.checked = !all)); upd(); } }, "Pilih / kosongkan semua"),
+      h("button", { class: "btn orange", type: "button", onclick: async () => { const pick = boxes.filter((b) => b.c.checked).map((b) => ({ name: b.s.name, qty: b.s.qty })); if (!pick.length) return toast("Pilih minimal satu barang.", "err"); close(); await addToShopping(pick); } }, h("span", null, "🛒 Tambahkan ("), count, h("span", null, ")")))));
+}
