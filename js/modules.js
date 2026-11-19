@@ -4,6 +4,7 @@ import { state, meMember, memberName, insertRow, insertMany, updateRow, deleteRo
 import { openAIAdvisor, completeRecipe, openWeeklyPlanner } from "./ai.js";
 import { healthView } from "./health.js";
 import { assetModule, serviceTools, serviceAssets } from "./assets.js";
+import { CATS, CAT_ICON, TYPES, CONDITIONS, STATUS, RELEASE, IDLE_DAYS, isGone, isIdle, idleDays, idleText, summarize, piecesOf, idleList } from "./clothes.js";
 
 export async function run(fn, okMsg) {
   try { await fn(); if (okMsg) toast(okMsg, "ok"); return true; }
@@ -233,6 +234,94 @@ function maintenanceView(root) {
 }
 
 // ============================================================
+// Lemari pakaian: ringkasan, target, rapikan, lepas
+// ============================================================
+function targetModal(person) {
+  const cur = state.data.clothes_targets.find((x) => x.person === person);
+  const inp = h("input", { type: "number", min: 1, inputmode: "numeric", value: cur?.target ?? "", "aria-label": "Target jumlah pakaian", placeholder: "mis. 60" });
+  let close;
+  const save = async (val) => {
+    if (await run(async () => {
+      if (val == null) { if (cur) await deleteRow("clothes_targets", cur.id); }
+      else if (cur) await updateRow("clothes_targets", cur.id, { target: val });
+      else await insertRow("clothes_targets", { person, target: val });
+    }, val == null ? "Target dihapus" : "Target disimpan ✓")) close();
+  };
+  close = modal(`Target pakaian · ${person}`, h("form", { novalidate: true, onsubmit: (e) => { e.preventDefault(); const v = Math.round(Number(inp.value)); if (!inp.value || !(v >= 1)) return toast("Isi angka lebih dari 0.", "err"); save(v); } },
+    h("p", { class: "hint", style: { marginBottom: ".8rem" } }, "Batas jumlah pakaian (potong) yang nyaman untuk satu orang. Aplikasi akan mengingatkan jika lemari melebihi target. Pakaian yang sudah dilepas tidak dihitung."),
+    h("div", { class: "field" }, h("label", null, "Target total pakaian (potong)"), inp),
+    h("div", { class: "foot" }, cur ? h("button", { class: "btn white", type: "button", onclick: () => save(null) }, "Hapus target") : null, h("button", { class: "btn primary blue", type: "submit" }, "Simpan"))));
+}
+
+function releaseModal(r, api) {
+  let close;
+  const pick = async (how) => { if (await run(() => updateRow("clothes", r.id, { status: STATUS.gone, released_how: how, released_on: today() }), "Dicatat sudah dilepas ✓")) close(); };
+  close = modal(`Lepas: ${r.name}`, h("div", null,
+    h("p", { style: { marginBottom: ".8rem" } }, "Diapakan pakaian ini? Catatannya tetap tersimpan di “Sudah dilepas”, dan jumlah lemari berkurang."),
+    h("div", { style: { display: "flex", flexDirection: "column", gap: ".5rem" } }, RELEASE.map((how) => h("button", { class: "btn white", type: "button", onclick: () => pick(how) }, how)))));
+}
+
+function tidyModal(rows) {
+  const now = today(), list = idleList(rows, now);
+  let close;
+  const body = h("div", { style: { display: "flex", flexDirection: "column", gap: ".5rem" } });
+  const draw = () => {
+    const cur = idleList(rows.map((r) => state.data.clothes.find((x) => x.id === r.id) || r), now);
+    if (!cur.length) { body.replaceChildren(h("div", { class: "msg" }, "Beres! Tidak ada lagi pakaian yang jarang dipakai. 🌿")); return; }
+    body.replaceChildren(...cur.map((r) => h("div", { class: "li", style: { alignItems: "flex-start", flexWrap: "wrap" } },
+      h("div", { class: "grow" }, h("b", null, r.name + (Number(r.qty) > 1 ? ` ×${Number(r.qty)}` : "")), h("small", null, [r.person, r.category, `terakhir dipakai ${idleText(idleDays(r, now))}`].filter(Boolean).join(" · "))),
+      h("div", { style: { display: "flex", gap: ".4rem", flexWrap: "wrap" } },
+        h("button", { class: "btn sm green", type: "button", onclick: async () => { await run(() => updateRow("clothes", r.id, { last_worn: now }), "Masih dipakai ✓"); draw(); } }, "Masih dipakai"),
+        h("button", { class: "btn sm orange", type: "button", onclick: async () => { await run(() => updateRow("clothes", r.id, { status: STATUS.ready }), "Ditandai siap dilepas"); draw(); } }, "📤 Lepas")))));
+  };
+  draw();
+  close = modal("🧹 Rapikan lemari", h("div", null,
+    h("p", { class: "hint", style: { marginBottom: ".8rem" } }, `Pakaian ini tidak tercatat dipakai ≥ ${IDLE_DAYS} hari (3 bulan). Tanyakan: apakah benar-benar masih dipakai? Kalau ya, tekan “Masih dipakai”. Kalau tidak, tandai untuk dilepas (donasi, jual, atau berikan).`),
+    body, h("div", { class: "foot" }, h("button", { class: "btn white", type: "button", onclick: () => close() }, "Tutup"))));
+  return list.length;
+}
+
+function clothesTop(root, rows) {
+  const st = uiState.clothes || {}, sel = String(st[0] || "all"), person = sel.startsWith("p:") ? sel.slice(2) : null, now = today();
+  const scope = person ? rows.filter((r) => r.person === person) : rows;
+  const s = summarize(scope, now);
+  const vital = (label, val, sub) => h("div", { class: "vital" }, h("small", null, label), h("b", null, String(val)), sub ? h("span", { class: "sub" }, sub) : null);
+  const cats = Object.entries(s.byCat).sort((a, b) => b[1] - a[1]);
+  const meter = (n, t) => h("div", { class: "bar", style: { height: "14px", marginTop: ".25rem" } }, h("i", { style: { width: Math.min(100, Math.round((n / t) * 100)) + "%", background: n > t ? "var(--red)" : "var(--green)" } }));
+  let target = null;
+  if (person) {
+    const t = state.data.clothes_targets.find((x) => x.person === person)?.target;
+    target = h("div", null,
+      h("div", { style: { display: "flex", justifyContent: "space-between", gap: ".5rem", alignItems: "center", flexWrap: "wrap" } },
+        h("b", null, t ? `Target ${person}: ${s.pieces} / ${t} potong${s.pieces > t ? " ⚠ melebihi" : ""}` : `${person} belum punya target jumlah pakaian`),
+        h("button", { class: "btn sm white", type: "button", onclick: () => targetModal(person) }, t ? "🎯 Ubah target" : "🎯 Atur target")),
+      t ? meter(s.pieces, t) : null);
+  } else {
+    const names = [...new Set(rows.map((r) => r.person).filter(Boolean))];
+    if (names.length) target = h("div", { style: { display: "flex", flexDirection: "column", gap: ".5rem" } }, names.map((n) => {
+      const pcs = piecesOf(rows, n), t = state.data.clothes_targets.find((x) => x.person === n)?.target;
+      return h("div", null, h("div", { style: { display: "flex", justifyContent: "space-between", gap: ".5rem", flexWrap: "wrap" } }, h("b", null, n), h("span", null, t ? `${pcs} / ${t} potong${pcs > t ? " ⚠" : ""}` : `${pcs} potong`)), t ? meter(pcs, t) : null);
+    }));
+  }
+  root.append(h("section", { class: "box panel", style: { marginBottom: "1.2rem" } },
+    h("h3", { style: { background: "var(--blue)" } }, h("span", null, `👕 Ringkasan lemari${person ? " · " + person : ""}`),
+      h("button", { class: "btn sm white more", type: "button", onclick: () => { if (!rows.some((r) => isIdle(r, now))) return toast("Tidak ada pakaian yang jarang dipakai. Lemari sudah rapi 🌿"); tidyModal(scope.length ? scope : rows); } }, `🧹 Rapikan lemari${s.idle ? " (" + s.idle + ")" : ""}`)),
+    h("div", { class: "body" },
+      h("div", { class: "vitals" }, vital("Total pakaian", s.pieces, "potong"), vital("Jenis pakaian", s.items, "item tercatat"),
+        vital("Jarang dipakai", s.idle, `≥ ${IDLE_DAYS} hari`), vital("Siap dilepas", s.ready, "menunggu"), vital("Sudah dilepas", s.gone, "lemari lebih ringan"), s.repair ? vital("Perlu perbaikan", s.repair, "jahit / ganti") : null),
+      cats.length ? h("div", { class: "meta", style: { display: "flex", flexWrap: "wrap", gap: ".4rem" } }, cats.map(([c, n]) => chip(`${CAT_ICON[c] || "👕"} ${c}: ${n}`, "blue"))) : null,
+      target,
+      h("details", { class: "steps" }, h("summary", null, "💡 Tips lemari minimalis"),
+        h("ol", null, [
+          "Aturan 1 masuk, 1 keluar: setiap membeli satu pakaian, lepaskan satu yang lama.",
+          "Tekan “👕 Dipakai hari ini” setiap kali memakainya. Setelah beberapa bulan, kelihatan mana yang jarang dipakai.",
+          `Tidak dipakai ≥ ${IDLE_DAYS} hari? Tanyakan apakah benar-benar perlu. Yang cukup, lepas (donasi, jual, atau berikan).`,
+          "Pakaian rusak: perbaiki sekarang, atau lepaskan. Jangan ditumpuk.",
+          "Atur target jumlah tiap orang agar belanja pakaian lebih terkendali.",
+        ].map((t) => h("li", null, t)))))));
+}
+
+// ============================================================
 // Konstanta pilihan
 // ============================================================
 const REPEAT = { none: "Tidak berulang", daily: "Harian", weekly: "Mingguan", monthly: "Bulanan" };
@@ -453,6 +542,71 @@ export const MODULES = [
         actions: [
           items.length ? h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(items.map((n) => ({ name: n }))) }, "🛒 Bahan ke belanja") : null,
           !steps.length ? h("button", { class: "btn sm lilac", type: "button", onclick: (e) => completeRecipe(r, { addToShopping }, e.currentTarget) }, "✨ Resep AI") : null,
+        ],
+      };
+    },
+  },
+
+  // ---------------- Pakaian ----------------
+  {
+    key: "clothes", table: "clothes", title: "Lemari Pakaian", nav: "Pakaian", singular: "Pakaian", icon: "👕", color: "blue", titleField: "name", wide: false,
+    emptyTitle: "Lemari masih kosong", emptyText: "Catat pakaian tiap anggota keluarga per kategori (harian, formal, tidur, olahraga…). Tandai saat dipakai agar kelihatan mana yang jarang disentuh, lalu lepaskan yang tidak perlu.",
+    fields: [
+      { k: "name", label: "Nama pakaian", required: true, placeholder: "mis. Kemeja putih lengan panjang" },
+      { k: "person", label: "Pemilik", type: "person", required: true, half: true, default: () => meMember()?.display_name || "" },
+      { k: "category", label: "Kategori", type: "select", options: CATS, half: true, default: "Harian / santai" },
+      { k: "type", label: "Jenis", type: "select", options: TYPES, half: true, default: "Kaos" },
+      { k: "qty", label: "Jumlah (potong)", type: "number", half: true, min: 1, default: 1, hint: "Untuk yang serupa, mis. 5 kaus kaki" },
+      { k: "color", label: "Warna", half: true },
+      { k: "size", label: "Ukuran", half: true, placeholder: "mis. M, 38, 2 tahun" },
+      { k: "condition", label: "Kondisi", type: "select", options: CONDITIONS, half: true, default: "Baik" },
+      { k: "bought_date", label: "Tanggal beli", type: "date", half: true },
+      { k: "last_worn", label: "Terakhir dipakai", type: "date", hint: "Boleh kosong. Nanti terisi sendiri lewat tombol “Dipakai hari ini”." },
+      { k: "notes", label: "Catatan", type: "textarea", placeholder: "mis. Hadiah, perlu dijahit, dipakai hanya untuk kondangan" },
+    ],
+    beforeSave: (o) => { o.qty = Math.max(1, Math.round(Number(o.qty) || 1)); o.status ??= STATUS.use; },
+    afterSave: async (o, old) => {
+      if (old) return;
+      const t = state.data.clothes_targets.find((x) => x.person === o.person)?.target;
+      const n = piecesOf(state.data.clothes, o.person);
+      if (t && n > t) toast(`Lemari ${o.person} sekarang ${n} potong, melebihi target ${t}. Aturan 1 masuk 1 keluar: pilih 1 yang dilepas 🌿`);
+    },
+    top: (root, rows) => clothesTop(root, rows),
+    filters: (rows) => {
+      const st = uiState.clothes || {}, sel = String(st[0] || "all"), person = sel.startsWith("p:") ? sel.slice(2) : null;
+      const names = [...new Set([...state.members.map((m) => m.display_name), ...rows.map((r) => r.person)].filter(Boolean))];
+      const inScope = rows.filter((r) => !person || r.person === person), now = today();
+      const cnt = (c) => inScope.filter((r) => !isGone(r) && r.category === c).reduce((n, r) => n + (Number(r.qty) || 1), 0);
+      return [
+        [{ id: "all", label: "Semua anggota" }, ...names.map((n) => ({ id: "p:" + n, label: n, test: (r) => r.person === n }))],
+        [{ id: "all", label: "Semua kategori" }, ...CATS.filter((c) => cnt(c) > 0 || st[1] === c).map((c) => ({ id: c, label: `${CAT_ICON[c]} ${c} (${cnt(c)})`, test: (r) => (r.category || "Lainnya") === c }))],
+        [{ id: "own", label: "Masih dimiliki", test: (r) => !isGone(r) },
+          { id: "idle", label: `😴 Jarang dipakai (≥ ${IDLE_DAYS} hari)`, test: (r) => isIdle(r, now) },
+          { id: "ready", label: "📤 Siap dilepas", test: (r) => r.status === STATUS.ready },
+          { id: "gone", label: "✅ Sudah dilepas", test: (r) => isGone(r) }],
+      ];
+    },
+    sort: by((r) => (isGone(r) ? 2 : r.status === STATUS.ready ? 1 : 0), (r) => r.person || "", (r) => r.category || "", (r) => (r.name || "").toLowerCase()),
+    card: (r, api) => {
+      const now = today(), idle = idleDays(r, now), gone = isGone(r), ready = r.status === STATUS.ready, idleFlag = isIdle(r, now);
+      const worn = Number(r.worn_count) || 0;
+      return {
+        title: (Number(r.qty) > 1 ? `${r.name} ×${Number(r.qty)}` : r.name), done: gone, color: gone ? "lilac" : ready ? "orange" : idleFlag ? "yellow" : "blue",
+        meta: [
+          r.person ? chip("👤 " + r.person, "lilac") : null, r.category ? chip(`${CAT_ICON[r.category] || "👕"} ${r.category}`, "blue") : null,
+          r.type ? chip(r.type) : null, r.color ? chip(r.color) : null, r.size ? chip("Uk. " + r.size) : null,
+          r.condition && r.condition !== "Baik" ? chip(r.condition === "Layak pakai" ? "Layak pakai" : "🪡 " + r.condition, r.condition === "Layak pakai" ? "yellow" : "orange") : null,
+          ready ? chip("📤 Siap dilepas", "orange") : null, gone ? chip(`✅ ${r.released_how || "Dilepas"}${r.released_on ? " · " + fmtShort(r.released_on) : ""}`, "green") : null,
+          !gone && idleFlag ? chip(`😴 Tak dipakai ${idleText(idle).replace(" lalu", "")}`, "yellow") : null,
+        ],
+        body: [
+          !gone ? h("div", { class: "note" }, worn ? `Dipakai ${worn}×` : "Belum ada catatan pemakaian", r.last_worn ? ` · terakhir ${idleText(idleDays({ last_worn: r.last_worn }, now))}` : "") : null,
+          r.notes ? h("div", { class: "note" }, r.notes) : null,
+        ],
+        actions: gone ? [h("button", { class: "btn sm white", type: "button", onclick: () => api.patch(r, { status: STATUS.use, released_how: null, released_on: null }, "Dikembalikan ke lemari") }, "↩ Kembalikan")] : [
+          h("button", { class: "btn sm green", type: "button", onclick: () => api.patch(r, { last_worn: now, worn_count: worn + 1 }, "Dicatat dipakai hari ini 👕") }, "👕 Dipakai hari ini"),
+          ready ? h("button", { class: "btn sm orange", type: "button", onclick: () => releaseModal(r, api) }, "📤 Lepas…") : h("button", { class: "btn sm white", type: "button", onclick: () => api.patch(r, { status: STATUS.ready }, "Ditandai siap dilepas") }, "📤 Siap dilepas"),
+          ready ? h("button", { class: "btn sm white", type: "button", onclick: () => api.patch(r, { status: STATUS.use, last_worn: now }, "Disimpan lagi di lemari") }, "↩ Simpan lagi") : null,
         ],
       };
     },

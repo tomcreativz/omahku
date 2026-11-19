@@ -4,6 +4,7 @@ import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, 
 import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
 import { assetAlerts, serviceAlerts } from "./assets.js";
+import { summarize, piecesOf } from "./clothes.js";
 import { vaxAlerts } from "./health.js";
 import { ageLabel } from "./vaxcalc.js";
 import { getPref, setPref } from "./theme.js";
@@ -85,6 +86,16 @@ export function renderDashboard(root) {
         maint.length || svcAl.length ? [
           ...svcAl.slice(0, 3).map(({ a, r }) => li(`🔧 Servis ${a.name}${a.plate ? " · " + a.plate : ""}`, r.date ? fmtDate(r.date) : "Berdasarkan kilometer", chip(r.text, r.tone))),
           ...maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange")))] : none("Belum ada perawatan atau servis yang jatuh tempo dalam 14 hari.")),
+
+      panel("👕 Lemari pakaian", "blue", "clothes",
+        (() => {
+          const names = [...new Set(D.clothes.map((r) => r.person).filter(Boolean))];
+          if (!names.length) return none("Catat pakaian tiap anggota agar lemari tetap ringkas.");
+          return names.map((n) => {
+            const s = summarize(D.clothes.filter((r) => r.person === n), t), tg = D.clothes_targets.find((x) => x.person === n)?.target;
+            return li(n, `${s.pieces} potong${tg ? " / target " + tg : ""}`, s.idle ? chip(`😴 ${s.idle} jarang dipakai`, "yellow") : tg && s.pieces > tg ? chip("Melebihi target", "red") : chip("Rapi", "green"));
+          });
+        })()),
 
       panel("🎯 Target keluarga", "yellow", "goals",
         goals.length ? goals.map((g) => h("div", { class: "li", style: { flexDirection: "column", alignItems: "stretch" } },

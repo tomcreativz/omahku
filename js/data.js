@@ -5,7 +5,7 @@
 // jadi hanya anggota "Team" (rumah tangga) yang bisa membaca/mengubah. Rumah tangga = satu Team Appwrite.
 import { CONFIG } from "./config.js";
 
-export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers"];
+export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets"];
 
 export const configured = !/GANTI-DENGAN/.test(CONFIG.ENDPOINT + CONFIG.PROJECT_ID);
 
