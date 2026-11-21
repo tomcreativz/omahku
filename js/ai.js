@@ -1,22 +1,19 @@
 // Saran menu dari AI lewat OpenRouter.
-// API key diisi sendiri oleh tiap pengguna dan disimpan HANYA di perangkat ini (localStorage).
-// Key tidak masuk ke database keluarga dan tidak terlihat oleh pasangan.
+// API key OpenRouter adalah KEY KELUARGA: satu key untuk seluruh anggota, disimpan di data keluarga (app_settings).
+// Semua anggota memakainya; hanya pemilik rumah (anggota pertama) yang dapat mengubah/menghapusnya (izin ditegakkan Appwrite).
 import { h, chip, modal, toast, today, addDays, daysBetween, fmtDate, fmtShort } from "./ui.js";
-import { state, insertMany, updateRow } from "./data.js";
+import { state, insertMany, updateRow, isOwner, ownerMember, familyAI, saveFamilyAI } from "./data.js";
 
 export const DEFAULT_MODEL = "openrouter/free";
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const MEALS = ["Sarapan", "Makan siang", "Makan malam", "Camilan"];
 
-// ---------- Penyimpanan key & model (per pengguna, per perangkat) ----------
-const lsKey = () => "omahku_ai_" + (state.user?.id || "x");
-export function getAI() {
-  try { const o = JSON.parse(localStorage.getItem(lsKey()) || "{}"); return { key: o.key || "", model: o.model || DEFAULT_MODEL }; }
-  catch { return { key: "", model: DEFAULT_MODEL }; }
-}
-function saveAI(o) {
-  try { localStorage.setItem(lsKey(), JSON.stringify(o)); return true; } catch { return false; }
-}
+// ---------- Key & model (key keluarga) ----------
+export function getAI() { const f = familyAI(); return { key: f.key, model: f.model || DEFAULT_MODEL }; }
+const ownerLabel = () => { const o = ownerMember(); return o ? `${o.display_name} (${o.role_name})` : "pembuat rumah"; };
+// Key pribadi dari versi lama (di perangkat ini) hanya dipakai untuk mengisi otomatis formulir pemilik; tidak dipakai langsung.
+const legacyKey = () => { try { return JSON.parse(localStorage.getItem("omahku_ai_" + state.user?.id) || "{}").key || ""; } catch { return ""; } };
+export function forgetAI(userId) { try { localStorage.removeItem("omahku_ai_" + userId); } catch { /* abaikan */ } }
 const maskKey = (k) => (k.length > 8 ? "••••" + k.slice(-4) : "••••");
 
 // ---------- Panggilan ke OpenRouter ----------
@@ -40,7 +37,7 @@ async function callAI(messages, { maxTokens = 4000, timeout = 120000 } = {}) {
   try { data = await res.json(); } catch { /* biarkan null */ }
   if (!res.ok) {
     const m = data?.error?.message;
-    if (res.status === 401) throw new Error("API key tidak valid. Periksa lagi kuncinya.");
+    if (res.status === 401) throw new Error(isOwner() ? "API key tidak valid. Periksa lagi kuncinya." : `Key AI keluarga tidak valid. Minta ${ownerLabel()} memperbaikinya.`);
     if (res.status === 402) throw new Error("Saldo OpenRouter tidak cukup. Isi saldo, atau pakai model gratis (openrouter/free).");
     if (res.status === 404) throw new Error("Model tidak ditemukan. Periksa nama modelnya.");
     if (res.status === 429) throw new Error("Terlalu banyak permintaan atau model gratis sedang penuh. Tunggu sebentar lalu coba lagi.");
@@ -114,20 +111,29 @@ const ingLine = (i) => (i.qty ? `${i.name} ${i.qty}` : i.name);
 const stepsText = (steps) => steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
 const notesText = (r) => [r.info, r.tip ? "💡 " + r.tip : ""].filter(Boolean).join("\n");
 
-// Formulir isi API key (dipakai di jendela Saran Menu dan jendela fitur AI lainnya).
+const noKeyPanel = () => h("div", { class: "msg" }, `🔑 Key AI keluarga belum diatur. Minta ${ownerLabel()} mengisinya di Pengaturan → Key AI keluarga.`);
+
+// Formulir isi key keluarga (hanya untuk pemilik rumah).
 function keyForm({ onDone, onCancel, onDeleted }) {
+  if (!isOwner()) return noKeyPanel();
   const ai = getAI();
-  const key = h("input", { id: "ai_key", type: "password", placeholder: "sk-or-v1-…", autocomplete: "off", spellcheck: "false", value: ai.key });
+  const key = h("input", { id: "ai_key", type: "password", placeholder: "sk-or-v1-…", autocomplete: "off", spellcheck: "false", value: ai.key || legacyKey() });
   const mdl = h("input", { id: "ai_model", type: "text", list: "ai_models", autocomplete: "off", spellcheck: "false", value: ai.model });
   const err = h("div", { class: "msg err", hidden: true });
-  const save = () => {
+  const submit = h("button", { class: "btn pink", type: "submit" }, "Simpan");
+  const save = async () => {
     const k = key.value.trim(), m = mdl.value.trim() || DEFAULT_MODEL;
     if (!k) { err.textContent = "API key wajib diisi."; err.hidden = false; key.focus(); return; }
-    if (!saveAI({ key: k, model: m })) { err.textContent = "Browser menolak menyimpan. Matikan mode privat lalu coba lagi."; err.hidden = false; return; }
-    toast("API key tersimpan ✓", "ok"); onDone();
+    submit.disabled = true;
+    try { await saveFamilyAI({ key: k, model: m }); forgetAI(state.user?.id); toast("Key keluarga tersimpan ✓", "ok"); onDone(); }
+    catch (e) { console.error(e); err.textContent = e?.message || "Gagal menyimpan."; err.hidden = false; submit.disabled = false; }
+  };
+  const remove = async () => {
+    try { await saveFamilyAI({ key: "", model: ai.model }); toast("Key keluarga dihapus"); onDeleted?.(); }
+    catch (e) { console.error(e); toast(e?.message || "Gagal menghapus", "err"); }
   };
   return h("form", { novalidate: true, onsubmit: (e) => { e.preventDefault(); save(); } },
-    h("div", { class: "msg" }, "Isi API key OpenRouter Anda sendiri. Key hanya disimpan di perangkat ini, tidak masuk ke data keluarga dan tidak terlihat oleh pasangan."),
+    h("div", { class: "msg" }, `Key ini dipakai bersama seluruh keluarga. Hanya pembuat rumah (${ownerLabel()}) yang dapat mengubah atau menghapusnya; anggota lain hanya memakainya.`),
     err,
     h("div", { class: "field" }, h("label", { for: "ai_key" }, "API key OpenRouter"), key,
       h("div", { class: "hint" }, "Buat di ", h("a", { href: "https://openrouter.ai/settings/keys", target: "_blank", rel: "noopener" }, "openrouter.ai/settings/keys"), ". Disarankan pasang batas penggunaan (credit limit) pada key.")),
@@ -135,18 +141,32 @@ function keyForm({ onDone, onCancel, onDeleted }) {
       h("datalist", { id: "ai_models" }, [DEFAULT_MODEL, "openrouter/auto", "openai/gpt-4o-mini"].map((m) => h("option", { value: m }))),
       h("div", { class: "hint" }, "Biarkan openrouter/free untuk model gratis. Daftar model lain di openrouter.ai/models.")),
     h("div", { class: "foot" },
-      ai.key ? h("button", { class: "btn white", type: "button", onclick: () => { saveAI({ key: "", model: ai.model }); toast("API key dihapus"); onDeleted?.(); } }, "Hapus key") : null,
+      ai.key ? h("button", { class: "btn white", type: "button", onclick: remove }, "Hapus key") : null,
       ai.key && onCancel ? h("button", { class: "btn white", type: "button", onclick: onCancel }, "Batal") : null,
-      h("button", { class: "btn pink", type: "submit" }, "Simpan")));
+      submit));
 }
 
-// Pastikan API key ada. Jika belum, buka jendela isi key. Mengembalikan true bila siap dipakai.
+// Kotak "Key AI keluarga" di halaman Pengaturan: semua anggota melihat statusnya; hanya pemilik yang bisa mengubah.
+export function familyKeyBox() {
+  const ai = getAI(), owner = isOwner();
+  const rerender = () => document.dispatchEvent(new CustomEvent("rt:rerender"));
+  const open = () => { const close = modal("🔑 Key AI keluarga", keyForm({ onDone: () => { close(); rerender(); }, onCancel: () => close(), onDeleted: () => { close(); rerender(); } })); };
+  return h("section", { class: "box card" }, h("h3", null, "🔑 Key AI keluarga"),
+    h("div", { class: "li" },
+      h("div", { class: "grow" }, ai.key ? ["Aktif ", h("b", null, maskKey(ai.key))] : "Belum diatur",
+        h("small", null, ai.key ? "Model: " + ai.model : owner ? "Isi key OpenRouter agar fitur AI bisa dipakai keluarga." : `Minta ${ownerLabel()} mengisinya.`)),
+      owner ? h("button", { class: "btn sm white", type: "button", onclick: open }, ai.key ? "Ubah" : "Atur") : chip("🔒 Hanya pembuat rumah", "yellow")),
+    h("div", { class: "note" }, "Satu key dipakai bersama oleh seluruh anggota keluarga untuk fitur saran AI."));
+}
+
+// Pastikan key ada. Pemilik: buka jendela isi key bila belum ada. Anggota lain: beri tahu siapa yang harus mengisinya.
 export function ensureAIKey() {
   return new Promise((resolve) => {
     if (getAI().key) return resolve(true);
+    if (!isOwner()) { toast(`Key AI keluarga belum diatur. Minta ${ownerLabel()} mengisinya di Pengaturan.`, "err"); return resolve(false); }
     let done = false, close = () => {};
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    close = modal("🔑 API key OpenRouter", keyForm({ onDone: () => { finish(true); close(); } }), { onClose: () => finish(false) });
+    close = modal("🔑 Key AI keluarga", keyForm({ onDone: () => { finish(true); close(); } }), { onClose: () => finish(false) });
   });
 }
 
@@ -162,23 +182,20 @@ export { str as aiStr, num as aiNum };
 export function openAIAdvisor({ addToShopping }) {
   const box = h("div");
   let close = () => {};
-  let showSettings = !getAI().key;
+  let showSettings = false;
 
   const render = () => { box.replaceChildren(settingsPanel(), ...(getAI().key && !showSettings ? [mainPanel()] : [])); };
 
-  // ----- Pengaturan key -----
+  // ----- Pengaturan key (hanya pemilik yang bisa mengubah) -----
   function settingsPanel() {
-    const ai = getAI();
-    if (ai.key && !showSettings) {
-      return h("div", { class: "li", style: { marginBottom: "1rem" } },
-        h("div", { class: "grow" }, "🔑 API key tersimpan ", h("b", null, maskKey(ai.key)), h("small", null, "Model: " + ai.model)),
-        h("button", { class: "btn sm white", type: "button", onclick: () => { showSettings = true; render(); } }, "Ubah"));
+    const ai = getAI(), owner = isOwner();
+    if (!ai.key) return owner ? keyForm({ onDone: render, onDeleted: render }) : noKeyPanel();
+    if (owner && showSettings) {
+      return keyForm({ onDone: () => { showSettings = false; render(); }, onCancel: () => { showSettings = false; render(); }, onDeleted: () => { showSettings = false; render(); } });
     }
-    return keyForm({
-      onDone: () => { showSettings = false; render(); },
-      onCancel: () => { showSettings = false; render(); },
-      onDeleted: () => { showSettings = true; render(); },
-    });
+    return h("div", { class: "li", style: { marginBottom: "1rem" } },
+      h("div", { class: "grow" }, "🔑 Key keluarga aktif ", h("b", null, maskKey(ai.key)), h("small", null, "Model: " + ai.model)),
+      owner ? h("button", { class: "btn sm white", type: "button", onclick: () => { showSettings = true; render(); } }, "Ubah") : null);
   }
 
   // ----- Form permintaan + hasil -----
@@ -280,7 +297,7 @@ export function openAIAdvisor({ addToShopping }) {
 // Lengkapi resep yang sudah ada (bahan + cara memasak)
 // ============================================================
 export async function completeRecipe(row, { addToShopping }, btn) {
-  if (!getAI().key) { toast("Isi API key OpenRouter dulu."); return openAIAdvisor({ addToShopping }); }
+  if (!getAI().key) { toast("Key AI keluarga belum diatur."); return openAIAdvisor({ addToShopping }); }
   if (btn) { btn.disabled = true; btn.textContent = "⏳ AI menulis…"; }
   try {
     const have = (row.ingredients || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);

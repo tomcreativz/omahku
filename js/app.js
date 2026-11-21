@@ -2,6 +2,7 @@ import { CONFIG } from "./config.js";
 import { h, $, toast } from "./ui.js";
 import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold, syncMyProfile, loadMembers, loadOutbox, restoreOffline, clearOffline, flushOutbox, pendingCount } from "./data.js";
 import { isNetworkError } from "./offline.js";
+import { forgetAI } from "./ai.js";
 import { MODULES, modByKey, renderModule } from "./modules.js";
 import { renderDashboard, renderSettings, renderMore } from "./pages.js";
 import { themeButton } from "./theme.js";
@@ -306,8 +307,10 @@ setInterval(() => {
 async function logout() {
   if (pendingCount() && navigator.onLine) await flushOutbox().catch(() => {});
   if (pendingCount() && !confirm(`Ada ${pendingCount()} perubahan offline yang belum terkirim. Jika keluar sekarang, perubahan itu hilang. Tetap keluar?`)) return;
-  clearPin(state.user?.id);
+  const uid = state.user?.id;
+  clearPin(uid);
   unsubscribe(); await signOut();
+  forgetAI(uid); // sisa key pribadi dari versi lama (bila ada) ikut dibersihkan dari perangkat
   state.user = null; state.household = null; state.loaded = false; state.members = []; state.pending = [];
   await clearOffline(); updateBar();
   toast("Sampai jumpa! 👋"); enter();

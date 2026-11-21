@@ -6,7 +6,7 @@
 import { CONFIG } from "./config.js";
 import { idbGet, idbSet, idbDel, isNetworkError } from "./offline.js";
 
-export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets", "documents", "member_profiles"];
+export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets", "documents", "member_profiles", "app_settings"];
 
 export const configured = !/GANTI-DENGAN/.test(CONFIG.ENDPOINT + CONFIG.PROJECT_ID);
 
@@ -40,17 +40,18 @@ export const memberName = (v) => {
   return state.members.find((m) => m.user_id === v)?.display_name || "";
 };
 export const isOwner = () => !!meMember() && meMember().role === "owner";
+export const ownerMember = () => state.members.find((m) => m.role === "owner") || null;
+export const ROLE_PRESETS = ["Suami", "Istri", "Ayah", "Ibu", "Anak"];
+const defaultRoleName = (m) => (m.role === "owner" ? "Suami" : "Istri"); // pembuat rumah = anggota pertama
 
 // Nama anggota: pakai data Appwrite bila tersedia; bila disembunyikan, pakai profil yang disimpan anggota itu sendiri.
 const emailName = (e) => String(e || "").split("@")[0];
 // Gabungkan semua catatan profil milik satu anggota (jaga-jaga bila ada lebih dari satu): nilai terakhir yang terisi menang.
 function profileOf(userId) {
-  const out = { name: "", email: "", alias: "" };
+  const out = { name: "", email: "", alias: "", role_name: "" };
   for (const p of state.data.member_profiles || []) {
     if (p.user_id !== userId) continue;
-    if (p.name) out.name = p.name;
-    if (p.email) out.email = p.email;
-    if (p.alias) out.alias = p.alias;
+    for (const k of Object.keys(out)) if (p[k]) out[k] = p[k];
   }
   return out;
 }
@@ -61,6 +62,7 @@ function refreshNames() {
     m.display_name = alias || m.api_name || p.name || emailName(m.api_email) || emailName(p.email) || "Anggota";
     m.email = m.api_email || p.email || "";
     m.name_known = !!(alias || m.api_name || p.name || m.api_email || p.email);
+    m.role_name = p.role_name || defaultRoleName(m);
   }
 }
 
@@ -169,6 +171,8 @@ const perms = () => {
   const r = Role.team(state.household.id);
   return [Permission.read(r), Permission.update(r), Permission.delete(r)];
 };
+// Baris yang boleh DIBACA seluruh anggota, tetapi hanya DIUBAH/DIHAPUS oleh pemilik rumah (ditegakkan oleh Appwrite).
+const ownerPerms = (ownerUid) => [Permission.read(Role.team(state.household.id)), Permission.update(Role.user(ownerUid)), Permission.delete(Role.user(ownerUid))];
 const sortRows = (t) => state.data[t].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
 function upsert(kind, row) {
@@ -244,7 +248,7 @@ export function flushOutbox() {
         inflight = o;
         try {
           if (o.op === "insert") {
-            const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: o.table, data: encode(o.values) }, permissions: perms() });
+            const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: o.table, data: encode(o.values) }, permissions: o.ownerOnly ? ownerPerms(o.ownerUid) : perms() });
             adoptServerId(o, row);
           } else if (o.op === "update") {
             await tablesDB.updateRow({ databaseId: DB, tableId: TBL, rowId: o.id, data: { data: encode(o.values) } });
@@ -326,23 +330,23 @@ export async function loadAll() {
 }
 export const loadTable = loadAll; // satu tabel fisik: muat ulang semuanya
 
-function localInsert(table, values) {
+function localInsert(table, values, opts = {}) {
   const id = "tmp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   state.data[table].push({ ...values, id, created_at: new Date().toISOString(), household_id: state.household?.id });
   sortRows(table); if (table === "member_profiles") refreshNames(); emit(table);
-  return enqueue({ op: "insert", table, id, values: { ...values } });
+  return enqueue({ op: "insert", table, id, values: { ...values }, ...(opts.ownerOnly ? { ownerOnly: true, ownerUid: opts.ownerUid } : {}) });
 }
 
-export async function insertRow(table, values) {
+export async function insertRow(table, values, opts = {}) {
   encode(values); // validasi ukuran lebih dulu
   const queued = shouldQueue();
   if (!queued) {
     try {
-      const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(values) }, permissions: perms() });
+      const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(values) }, permissions: opts.ownerOnly ? ownerPerms(opts.ownerUid) : perms() });
       upsert(table, row); return;
     } catch (e) { if (!isNetworkError(e)) throw e; }
   }
-  await localInsert(table, values);
+  await localInsert(table, values, opts);
   if (queued) kick();
 }
 export async function insertMany(table, rows) {
@@ -391,12 +395,43 @@ export async function deleteMany(table, ids) {
   await Promise.all(ids.map((id) => deleteRow(table, id)));
 }
 
-// Beri nama panggilan untuk anggota lain (tampil di kedua perangkat). Kosong = hapus nama panggilan.
-export async function setMemberAlias(userId, alias) {
-  const clean = String(alias || "").trim().slice(0, 40);
+// Ubah satu field profil anggota (nilai kosong = hapus). Bila ada baris ganda, hanya baris pertama yang menyimpan nilainya.
+async function setProfileField(userId, field, value) {
+  const clean = String(value || "").trim().slice(0, 40);
   const mine = (state.data.member_profiles || []).filter((p) => p.user_id === userId);
-  if (!mine.length) { if (clean) await insertRow("member_profiles", { user_id: userId, name: "", email: "", alias: clean }); return; }
-  for (const p of mine) if ((p.alias || "") !== (p.id === mine[0].id ? clean : "")) await updateRow("member_profiles", p.id, { alias: p.id === mine[0].id ? clean : "" });
+  if (!mine.length) { if (clean) await insertRow("member_profiles", { user_id: userId, name: "", email: "", alias: "", role_name: "", [field]: clean }); return; }
+  for (let i = 0; i < mine.length; i++) {
+    const want = i === 0 ? clean : "";
+    if ((mine[i][field] || "") !== want) await updateRow("member_profiles", mine[i].id, { [field]: want });
+  }
+}
+// Nama panggilan untuk anggota lain (tampil di kedua perangkat).
+export const setMemberAlias = (userId, alias) => setProfileField(userId, "alias", alias);
+// Nama peran (Suami, Istri, Ayah, …). Pembuat rumah boleh mengubah siapa pun; anggota hanya perannya sendiri.
+export function setMemberRole(userId, roleName) {
+  if (!isOwner() && userId !== state.user?.id) throw new Error("Hanya pembuat rumah yang dapat mengubah peran anggota lain.");
+  return setProfileField(userId, "role_name", roleName);
+}
+
+// ------------------------------------------------------------
+// Key AI keluarga: satu key untuk seluruh keluarga. Dibaca semua anggota, hanya pemilik rumah yang bisa mengubahnya.
+// Baris dibuat dengan izin ubah/hapus khusus pemilik; field "by" mencegah baris buatan anggota lain dipakai.
+// ------------------------------------------------------------
+function familyAIRow() {
+  const owner = ownerMember();
+  const rows = (state.data.app_settings || []).filter((r) => owner && r.by === owner.user_id);
+  return rows[rows.length - 1] || null;
+}
+export function familyAI() {
+  const r = familyAIRow();
+  return { key: r?.ai_key || "", model: r?.ai_model || "" };
+}
+export async function saveFamilyAI({ key, model }) {
+  if (!isOwner()) throw new Error("Hanya pembuat rumah yang dapat mengubah key AI keluarga.");
+  const values = { by: ownerMember().user_id, ai_key: String(key || "").trim(), ai_model: String(model || "").trim() };
+  const cur = familyAIRow();
+  if (cur) await updateRow("app_settings", cur.id, values);
+  else await insertRow("app_settings", values, { ownerOnly: true, ownerUid: values.by });
 }
 
 // Simpan nama & email saya ke data keluarga agar anggota lain bisa menampilkannya.

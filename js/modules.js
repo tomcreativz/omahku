@@ -55,7 +55,7 @@ const bool = (v) => (v ? 1 : 0);
 // Form generik
 // ============================================================
 function memberOptions() {
-  return [["", "— Belum ditentukan —"], ...state.members.map((m) => [m.user_id, m.display_name]), ["both", "Berdua"]];
+  return [["", "— Belum ditentukan —"], ...state.members.map((m) => [m.user_id, `${m.display_name} (${m.role_name})`]), ["both", "Berdua"]];
 }
 
 export function openForm(mod, row = null, prefill = {}) {

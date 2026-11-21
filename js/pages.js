@@ -1,7 +1,8 @@
 // Halaman Beranda, Pengaturan, dan menu "Lainnya".
 import { CONFIG } from "./config.js";
 import { h, chip, toast, modal, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, relDay } from "./ui.js";
-import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers, loadAll, setMemberAlias } from "./data.js";
+import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers, loadAll, setMemberAlias, setMemberRole, ROLE_PRESETS } from "./data.js";
+import { familyKeyBox } from "./ai.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
 import { assetAlerts, serviceAlerts } from "./assets.js";
 import { isLocked, lockSettings } from "./lock.js";
@@ -139,26 +140,34 @@ export function renderSettings(root, { logout, onRenamed }) {
   const hh = state.household, me = meMember(), owner = isOwner();
   const hhName = h("input", { type: "text", value: hh.name, maxlength: 60, "aria-label": "Nama rumah" });
   const myName = h("input", { type: "text", value: me?.display_name || state.user.name || "", maxlength: 40, "aria-label": "Nama panggilan" });
+  const myRole = h("input", { type: "text", list: "role_options", value: me?.role_name || "", maxlength: 30, placeholder: "Contoh: Istri", "aria-label": "Peran dalam keluarga" });
   const oldPw = state.user.hasPassword ? h("input", { type: "password", placeholder: "Password saat ini", autocomplete: "current-password", "aria-label": "Password saat ini" }) : null;
   const pw = h("input", { type: "password", placeholder: "Password baru (min. 8 karakter)", minlength: 8, autocomplete: "new-password", "aria-label": "Password baru" });
 
   const total = state.members.length + state.pending.length;
   const full = total >= hh.max_members;
 
-  // Beri nama panggilan untuk anggota lain
+  // Ubah nama panggilan (dan, khusus pemilik rumah, peran) anggota lain
   function renameMember(m) {
     const input = h("input", { type: "text", value: m.name_known ? m.display_name : "", maxlength: 40, placeholder: "Contoh: Sari", "aria-label": "Nama anggota" });
-    const save = (val) => run(async () => { await setMemberAlias(m.user_id, val); close(); schedule(); }, "Tersimpan ✓");
-    const close = modal("Nama untuk anggota ini", h("div", null,
+    const roleInput = owner ? h("input", { type: "text", list: "role_options_m", value: m.role_name, maxlength: 30, placeholder: "Contoh: Istri", "aria-label": "Peran anggota" }) : null;
+    const save = (alias, role) => run(async () => {
+      await setMemberAlias(m.user_id, alias);
+      if (role !== undefined) await setMemberRole(m.user_id, role);
+      close(); schedule();
+    }, "Tersimpan ✓");
+    const close = modal(owner ? "Nama & peran anggota" : "Nama untuk anggota ini", h("div", null,
       h("div", { class: "field" }, h("label", null, "Nama yang ditampilkan"), input),
+      roleInput ? h("div", { class: "field" }, h("label", null, "Peran di keluarga"), roleInput,
+        h("datalist", { id: "role_options_m" }, ROLE_PRESETS.map((r) => h("option", { value: r })))) : null,
       h("div", { class: "foot" },
-        h("button", { class: "btn white", type: "button", onclick: () => save("") }, "Kembalikan"),
-        h("button", { class: "btn yellow", type: "button", onclick: () => save(input.value.trim()) }, "Simpan"))));
+        h("button", { class: "btn white", type: "button", onclick: () => save("", owner ? "" : undefined) }, "Kembalikan"),
+        h("button", { class: "btn yellow", type: "button", onclick: () => save(input.value.trim(), roleInput ? roleInput.value.trim() : undefined) }, "Simpan"))));
   }
   const memberRow = (m) => {
     const self = m.user_id === state.user.id;
     const sub = m.email || (!self && !m.name_known ? "Nama belum tersedia — ketuk ✏️ untuk memberi nama" : m.role === "owner" ? "Pembuat rumah" : "Anggota");
-    const badge = chip(m.role === "owner" ? "👑" : "👤", "lilac");
+    const badge = chip((m.role === "owner" ? "👑 " : "👤 ") + m.role_name, "lilac");
     const right = self ? badge : h("span", { style: { display: "inline-flex", gap: ".4rem", alignItems: "center" } }, badge,
       h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Ubah nama anggota", onclick: () => renameMember(m) }, "✏️"));
     return li(m.display_name + (self ? " (kamu)" : ""), sub, right);
@@ -203,10 +212,14 @@ export function renderSettings(root, { logout, onRenamed }) {
       h("section", { class: "box card" }, h("h3", null, "👨‍👩‍👧 Anggota"), members,
         h("button", { class: "btn sm white", type: "button", onclick: () => run(async () => { await loadAll(); await loadMembers(); schedule(); }, "Diperbarui") }, "🔄 Segarkan"),
         h("div", { class: "field", style: { marginTop: ".6rem" } }, h("label", null, "Nama panggilanmu"), myName),
+        h("div", { class: "field" }, h("label", null, "Peranmu di keluarga"), myRole, h("datalist", { id: "role_options" }, ROLE_PRESETS.map((r) => h("option", { value: r }))),
+          h("div", { class: "hint" }, "Contoh: Suami, Istri, Ayah, Ibu. Kosongkan untuk memakai peran bawaan.")),
         h("button", { class: "btn yellow", type: "button", onclick: () => run(async () => {
           const v = myName.value.trim(); if (!v) throw new Error("Nama tidak boleh kosong.");
-          await renameMe(v); onRenamed();
-        }, "Tersimpan ✓") }, "Simpan nama")),
+          await renameMe(v); await setMemberRole(state.user.id, myRole.value.trim()); onRenamed();
+        }, "Tersimpan ✓") }, "Simpan nama & peran")),
+
+      familyKeyBox(),
 
       h("section", { class: "box card" }, h("h3", null, "🔐 Akun"),
         h("div", { class: "note" }, "Masuk sebagai " + state.user.email),
@@ -234,7 +247,7 @@ export function renderSettings(root, { logout, onRenamed }) {
 
 function exportBackup() {
   const out = { app: CONFIG.APP_NAME, exported_at: new Date().toISOString(), household: { name: state.household.name }, members: state.members.map((m) => m.display_name), data: {} };
-  for (const t of TABLES) out.data[t] = state.data[t].map(({ household_id, created_by, ...rest }) => rest);
+  for (const t of TABLES) if (t !== "app_settings") out.data[t] = state.data[t].map(({ household_id, created_by, ...rest }) => rest);
   const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" })), download: `omahku-cadangan-${today()}.json` });
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast("Cadangan diunduh ✓", "ok");
