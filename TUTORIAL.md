@@ -191,7 +191,7 @@ Catatan:
 - **iPhone / iPad**: Safari → tombol **Bagikan** → **Tambah ke Layar Utama**.
 - **Komputer (Chrome/Edge)**: ikon instal di kolom alamat.
 
-Aplikasi akan punya ikon sendiri dan terbuka layar penuh. Tampilannya tersedia offline, tetapi data tetap membutuhkan internet.
+Aplikasi akan punya ikon sendiri dan terbuka layar penuh. Aplikasi juga bisa dibuka **tanpa internet**: data terakhir tersimpan di perangkat dan tetap bisa dilihat. Tambah/ubah/hapus catatan saat offline akan diantre lalu dikirim otomatis begitu internet kembali (ada pita merah di atas layar selama offline). Syarat: aplikasi sudah pernah dibuka **sekali saat online** di perangkat itu. Fitur yang tetap butuh internet: undang anggota, ganti nama/password, dan saran AI. Saat Keluar dari akun, salinan data di perangkat ikut dihapus.
 
 ---
 
@@ -230,6 +230,7 @@ Aplikasi akan punya ikon sendiri dan terbuka layar penuh. Tampilannya tersedia o
 | Undangan tidak sampai | Cek folder spam. Pastikan email benar. Batalkan lalu kirim ulang. Pastikan hostname situs terdaftar |
 | "URL host must be either localhost or a registered platform" | Platform untuk alamat situs yang sedang dipakai belum ditambahkan |
 | Pasangan melihat halaman "Buat rumah" | Ia mendaftar sendiri tanpa membuka tautan undangan. Minta ia keluar, lalu kirim undangan ke email yang ia pakai mendaftar dan klik tautannya |
+| Offline tapi layar "Gagal memuat data" | Aplikasi belum pernah dibuka saat online di perangkat itu, atau Anda baru keluar akun (salinan data ikut terhapus). Buka sekali saat online, lalu coba lagi offline |
 | Nama pasangan tampil "Anggota" | Appwrite menyembunyikan nama anggota lain. Omahku mengatasinya dengan menyimpan nama tiap anggota di data keluarga, tetapi nama baru muncul **setelah pasangan membuka aplikasi versi terbaru satu kali**. Anda juga bisa mengaktifkan *User name* dan *User email* di Auth → Settings → Memberships privacy |
 | "Password minimal 8 karakter" | Aturan Appwrite |
 | Berhenti sinkron | Tutup dan buka lagi aplikasi (otomatis memuat ulang). Pastikan proyek tidak ter-pause |
