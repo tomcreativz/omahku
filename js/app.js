@@ -1,6 +1,6 @@
 import { CONFIG } from "./config.js";
 import { h, $, toast } from "./ui.js";
-import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold } from "./data.js";
+import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold, syncMyProfile } from "./data.js";
 import { MODULES, modByKey, renderModule } from "./modules.js";
 import { renderDashboard, renderSettings, renderMore } from "./pages.js";
 import { themeButton } from "./theme.js";
@@ -247,7 +247,7 @@ export function enter() {
       if (!state.user) { unsubscribe(); state.household = null; state.loaded = false; return showAuth(); }
       splash();
       if (!(await loadHousehold())) return showOnboarding();
-      await loadAll(); subscribe(); showApp();
+      await loadAll(); subscribe(); showApp(); syncMyProfile().catch((e) => console.warn("Profil anggota belum tersimpan", e));
     } catch (e) { showFatal(e); }
     finally { entering = null; }
   })();

@@ -5,7 +5,7 @@
 // jadi hanya anggota "Team" (rumah tangga) yang bisa membaca/mengubah. Rumah tangga = satu Team Appwrite.
 import { CONFIG } from "./config.js";
 
-export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets", "documents"];
+export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets", "documents", "member_profiles"];
 
 export const configured = !/GANTI-DENGAN/.test(CONFIG.ENDPOINT + CONFIG.PROJECT_ID);
 
@@ -40,6 +40,17 @@ export const memberName = (v) => {
 };
 export const isOwner = () => !!meMember() && meMember().role === "owner";
 
+// Nama anggota: pakai data Appwrite bila tersedia; bila disembunyikan, pakai profil yang disimpan anggota itu sendiri.
+const emailName = (e) => String(e || "").split("@")[0];
+function refreshNames() {
+  const profiles = state.data.member_profiles || [];
+  for (const m of [...state.members, ...state.pending]) {
+    const p = profiles.find((x) => x.user_id === m.user_id);
+    m.display_name = m.api_name || p?.name || emailName(m.api_email) || emailName(p?.email) || "Anggota";
+    m.email = m.api_email || p?.email || "";
+  }
+}
+
 // URL aplikasi ini (untuk tautan di email undangan / reset password).
 // Hostname-nya HARUS terdaftar sebagai Platform Web di Appwrite Console.
 export const appUrl = () => location.origin + location.pathname.replace(/index\.html$/, "");
@@ -70,7 +81,8 @@ export async function setPassword(password, oldPassword) {
 export async function renameMe(name) {
   await account.updateName({ name });
   if (state.user) state.user.name = name;
-  const me = meMember(); if (me) me.display_name = name;
+  const me = meMember(); if (me) { me.api_name = name; me.display_name = name; }
+  syncMyProfile().catch(() => { /* akan dicoba lagi saat masuk berikutnya */ });
 }
 export async function acceptInvite({ teamId, membershipId, userId, secret }) {
   await teams.updateMembershipStatus({ teamId, membershipId, userId, secret });
@@ -91,7 +103,10 @@ export async function loadHousehold() {
 export async function loadMembers() {
   const { memberships } = await teams.listMemberships({ teamId: state.household.id });
   const map = (m) => ({
-    membership_id: m.$id, user_id: m.userId, email: m.userEmail,
+    membership_id: m.$id, user_id: m.userId,
+    // Appwrite bisa menyembunyikan nama/email anggota lain (privasi keanggotaan). Simpan apa adanya,
+    // lalu refreshNames() melengkapinya dari catatan "member_profiles" milik tiap anggota.
+    api_name: m.userName || "", api_email: m.userEmail || "", email: m.userEmail || "",
     display_name: m.userName || (m.userEmail || "").split("@")[0] || "Anggota",
     role: (m.roles || []).includes("owner") ? "owner" : "member",
     confirm: !!m.confirm,
@@ -99,6 +114,7 @@ export async function loadMembers() {
   const all = memberships.map(map);
   state.members = all.filter((m) => m.confirm);
   state.pending = all.filter((m) => !m.confirm);
+  refreshNames();
   emit("members");
 }
 
@@ -148,11 +164,11 @@ function upsert(kind, row) {
   const i = list.findIndex((x) => x.id === row.$id);
   const dec = decode(row);
   if (i >= 0) list[i] = dec; else list.push(dec);
-  sortRows(kind); emit(kind);
+  sortRows(kind); if (kind === "member_profiles") refreshNames(); emit(kind);
 }
 function remove(kind, id) {
   if (!state.data[kind]) return;
-  state.data[kind] = state.data[kind].filter((x) => x.id !== id); emit(kind);
+  state.data[kind] = state.data[kind].filter((x) => x.id !== id); if (kind === "member_profiles") refreshNames(); emit(kind);
 }
 
 export async function loadAll() {
@@ -168,6 +184,7 @@ export async function loadAll() {
   }
   for (const t of TABLES) fresh[t].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
   state.data = fresh; state.loaded = true;
+  refreshNames();
   TABLES.forEach(emit);
 }
 export const loadTable = loadAll; // satu tabel fisik: muat ulang semuanya
@@ -197,6 +214,20 @@ export async function deleteRow(table, id) {
 export async function deleteMany(table, ids) {
   await Promise.all(ids.map((id) => tablesDB.deleteRow({ databaseId: DB, tableId: TBL, rowId: id })));
   ids.forEach((id) => remove(table, id));
+}
+
+// Simpan nama & email saya ke data keluarga agar anggota lain bisa menampilkannya.
+let syncingProfile = false;
+export async function syncMyProfile() {
+  if (syncingProfile || !state.user || !state.household || !state.loaded || !meMember()) return;
+  syncingProfile = true;
+  try {
+    const email = state.user.email || "";
+    const name = state.user.name || emailName(email) || "Anggota";
+    const cur = state.data.member_profiles.find((p) => p.user_id === state.user.id);
+    if (!cur) await insertRow("member_profiles", { user_id: state.user.id, name, email });
+    else if (cur.name !== name || cur.email !== email) await updateRow("member_profiles", cur.id, { name, email });
+  } finally { syncingProfile = false; }
 }
 
 // ============================================================
