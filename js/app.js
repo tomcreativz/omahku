@@ -1,6 +1,7 @@
 import { CONFIG } from "./config.js";
 import { h, $, toast } from "./ui.js";
-import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold, syncMyProfile } from "./data.js";
+import { configured, state, onChange, loadHousehold, loadAll, subscribe, unsubscribe, meMember, fetchUser, signIn, signUp, signOut, sendRecovery, completeRecovery, setPassword, acceptInvite, createHousehold, syncMyProfile, loadMembers, loadOutbox, restoreOffline, clearOffline, flushOutbox, pendingCount } from "./data.js";
+import { isNetworkError } from "./offline.js";
 import { MODULES, modByKey, renderModule } from "./modules.js";
 import { renderDashboard, renderSettings, renderMore } from "./pages.js";
 import { themeButton } from "./theme.js";
@@ -15,10 +16,34 @@ window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); wind
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
 }
-const offlineBar = h("div", { class: "offline", hidden: navigator.onLine }, "Kamu sedang offline — perubahan belum tersimpan.");
+const offlineBar = h("div", { class: "offline", hidden: true, role: "status" });
+function updateBar() {
+  const n = pendingCount();
+  if (!navigator.onLine) { offlineBar.textContent = "Mode offline — menampilkan data tersimpan di perangkat" + (n ? ` · ${n} perubahan menunggu dikirim` : "."); offlineBar.hidden = false; }
+  else if (n) { offlineBar.textContent = `Mengirim ${n} perubahan…`; offlineBar.hidden = false; }
+  else offlineBar.hidden = true;
+}
 document.body.append(offlineBar);
-addEventListener("online", () => { offlineBar.hidden = true; if (state.household) loadAll().catch(() => {}); });
-addEventListener("offline", () => (offlineBar.hidden = false));
+updateBar();
+onChange((what) => { if (what === "outbox") updateBar(); });
+
+// Koneksi kembali: kirim perubahan yang tertunda, ambil data terbaru, sambungkan realtime lagi.
+addEventListener("online", async () => {
+  updateBar();
+  if (!state.household) return;
+  try { await flushOutbox(); await loadAll(); await loadMembers(); subscribe(); syncMyProfile().catch(() => {}); }
+  catch (e) {
+    if (e?.code === 401) { toast(friendly(e), "err"); unsubscribe(); state.user = null; state.household = null; state.loaded = false; enter(); }
+  }
+  updateBar();
+});
+addEventListener("offline", updateBar);
+document.addEventListener("rt:sync", (e) => {
+  const { sent = 0, failed = 0 } = e.detail || {};
+  if (failed) { toast(`${failed} perubahan offline tidak bisa disimpan (mungkin sudah dihapus atau diubah pasangan).`, "err"); loadAll().catch(() => {}); }
+  else if (sent) toast(`${sent} perubahan offline sudah tersimpan ✓`, "ok");
+  updateBar();
+});
 
 const mount = (...nodes) => { app.replaceChildren(...nodes); window.scrollTo(0, 0); };
 const logo = () => h("div", { class: "brand" }, h("span", { class: "logo" }, "🏠"), h("span", null, CONFIG.APP_NAME));
@@ -246,9 +271,14 @@ export function enter() {
       if (!state.user) state.user = await fetchUser();
       if (!state.user) { unsubscribe(); state.household = null; state.loaded = false; return showAuth(); }
       splash();
+      await loadOutbox();
       if (!(await loadHousehold())) return showOnboarding();
       await loadAll(); subscribe(); showApp(); syncMyProfile().catch((e) => console.warn("Profil anggota belum tersimpan", e));
-    } catch (e) { showFatal(e); }
+    } catch (e) {
+      // Tidak ada internet: buka salinan data terakhir yang tersimpan di perangkat
+      if (isNetworkError(e) && (await restoreOffline())) { showApp(); toast("Mode offline: menampilkan data tersimpan di perangkat.", "ok"); updateBar(); return; }
+      showFatal(e);
+    }
     finally { entering = null; }
   })();
   return entering;
@@ -274,9 +304,12 @@ setInterval(() => {
 }, 5000);
 
 async function logout() {
+  if (pendingCount() && navigator.onLine) await flushOutbox().catch(() => {});
+  if (pendingCount() && !confirm(`Ada ${pendingCount()} perubahan offline yang belum terkirim. Jika keluar sekarang, perubahan itu hilang. Tetap keluar?`)) return;
   clearPin(state.user?.id);
   unsubscribe(); await signOut();
   state.user = null; state.household = null; state.loaded = false; state.members = []; state.pending = [];
+  await clearOffline(); updateBar();
   toast("Sampai jumpa! 👋"); enter();
 }
 

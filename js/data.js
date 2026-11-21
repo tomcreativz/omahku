@@ -4,6 +4,7 @@
 // satu baris; isinya disimpan sebagai JSON di kolom "data". Hak akses tiap baris = Role.team(<id rumah>),
 // jadi hanya anggota "Team" (rumah tangga) yang bisa membaca/mengubah. Rumah tangga = satu Team Appwrite.
 import { CONFIG } from "./config.js";
+import { idbGet, idbSet, idbDel, isNetworkError } from "./offline.js";
 
 export const TABLES = ["agenda", "tasks", "stock_items", "shopping_items", "menus", "maintenance", "goals", "contacts", "health_records", "health_profiles", "health_metrics", "assets", "asset_services", "sos_numbers", "clothes", "clothes_targets", "documents", "member_profiles"];
 
@@ -171,7 +172,131 @@ function remove(kind, id) {
   state.data[kind] = state.data[kind].filter((x) => x.id !== id); if (kind === "member_profiles") refreshNames(); emit(kind);
 }
 
+// ------------------------------------------------------------
+// Offline: antrean perubahan (outbox) + salinan data di perangkat (snapshot)
+// ------------------------------------------------------------
+// Saat tidak ada internet, perubahan tetap tampil di layar dan masuk antrean, lalu dikirim berurutan
+// begitu koneksi kembali. Baris yang dibuat offline memakai id sementara berawalan "tmp_".
+let outbox = [];          // [{ op: "insert"|"update"|"delete", table, id, values? }]
+let outboxUid = null;     // pemilik antrean (agar tidak tercampur antar akun)
+let inflight = null;      // operasi yang sedang dikirim (tidak boleh digabung/diubah)
+let flushing = null;
+const isTmp = (id) => String(id).startsWith("tmp_");
+export const pendingCount = () => outbox.length;
+const shouldQueue = () => !navigator.onLine || outbox.length > 0; // antrean tidak kosong: jaga urutan
+
+async function persistOutbox() {
+  try { await idbSet("outbox", { uid: outboxUid, ops: outbox }); } catch { /* penyimpanan perangkat diblokir/penuh */ }
+  emit("outbox");
+}
+export async function loadOutbox() {
+  if (outbox.length && outboxUid === (state.user?.id || null)) return;
+  try {
+    const o = await idbGet("outbox");
+    outbox = o && o.uid === state.user?.id && Array.isArray(o.ops) ? o.ops : [];
+    outboxUid = state.user?.id || null;
+  } catch { outbox = []; }
+}
+function enqueue(op) {
+  outboxUid = state.user?.id || null;
+  if (op.op === "update") {
+    const prev = outbox.find((o) => o !== inflight && o.id === op.id && (o.op === "insert" || o.op === "update"));
+    if (prev) { prev.values = op.values; return persistOutbox(); } // gabungkan: cukup kirim versi terakhir
+  } else if (op.op === "delete") {
+    const hadInsert = outbox.some((o) => o !== inflight && o.id === op.id && o.op === "insert");
+    outbox = outbox.filter((o) => o === inflight || o.id !== op.id);
+    if (hadInsert) return persistOutbox(); // dibuat & dihapus saat offline: tak perlu dikirim sama sekali
+  }
+  outbox.push(op);
+  return persistOutbox();
+}
+const kick = () => { if (navigator.onLine) flushOutbox().catch(() => {}); };
+
+function adoptServerId(op, row) {
+  const tmp = op.id, real = row.$id;
+  for (const x of outbox) if (x !== op && x.id === tmp) x.id = real; // operasi susulan kini menunjuk baris asli
+  const list = state.data[op.table] || [];
+  if (list.some((r) => r.id === real)) state.data[op.table] = list.filter((r) => r.id !== tmp); // echo realtime sudah masuk
+  else { const loc = list.find((r) => r.id === tmp); if (loc) { loc.id = real; loc.created_at = row.$createdAt; } }
+  sortRows(op.table); emit(op.table);
+}
+
+// Kirim antrean berurutan. Berhenti bila jaringan putus (sisa antrean tetap tersimpan).
+export function flushOutbox() {
+  if (flushing) return flushing;
+  flushing = (async () => {
+    let sent = 0, failed = 0;
+    try {
+      while (outbox.length) {
+        const o = outbox[0];
+        inflight = o;
+        try {
+          if (o.op === "insert") {
+            const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: o.table, data: encode(o.values) }, permissions: perms() });
+            adoptServerId(o, row);
+          } else if (o.op === "update") {
+            await tablesDB.updateRow({ databaseId: DB, tableId: TBL, rowId: o.id, data: { data: encode(o.values) } });
+          } else {
+            try { await tablesDB.deleteRow({ databaseId: DB, tableId: TBL, rowId: o.id }); }
+            catch (e) { if (e?.code !== 404) throw e; } // sudah terhapus di server: anggap beres
+          }
+          sent++;
+        } catch (e) {
+          if (isNetworkError(e)) break;
+          console.warn("Perubahan offline tidak bisa dikirim", o, e); failed++; // mis. baris sudah dihapus pasangan
+        } finally { inflight = null; }
+        const i = outbox.indexOf(o); if (i >= 0) outbox.splice(i, 1);
+        await persistOutbox();
+      }
+    } finally {
+      flushing = null; inflight = null;
+      if (sent || failed) document.dispatchEvent(new CustomEvent("rt:sync", { detail: { sent, failed } }));
+    }
+    return { sent, failed };
+  })();
+  return flushing;
+}
+
+let saveTimer = 0;
+async function saveSnapshot() {
+  if (!state.user || !state.household || !state.loaded) return;
+  try { await idbSet("snapshot", { v: 1, savedAt: Date.now(), user: state.user, household: state.household, members: state.members, pending: state.pending, data: state.data }); }
+  catch { /* penyimpanan perangkat diblokir/penuh: aplikasi tetap jalan, hanya tanpa mode offline */ }
+}
+function applyOutbox() { // pasang kembali perubahan yang belum terkirim di atas salinan data
+  for (const o of outbox) {
+    const list = state.data[o.table]; if (!list) continue;
+    const i = list.findIndex((r) => r.id === o.id);
+    if (o.op === "delete") { if (i >= 0) list.splice(i, 1); continue; }
+    const row = { ...(i >= 0 ? list[i] : {}), ...o.values, id: o.id, created_at: i >= 0 ? list[i].created_at : new Date().toISOString(), household_id: state.household?.id };
+    if (i >= 0) list[i] = row; else list.push(row);
+  }
+  TABLES.forEach(sortRows);
+}
+// Dipakai saat server tak terjangkau: isi state dari salinan terakhir di perangkat.
+export async function restoreOffline() {
+  let snap;
+  try { snap = await idbGet("snapshot"); } catch { return false; }
+  if (!snap || !snap.user || !snap.household) return false;
+  if (state.user && state.user.id !== snap.user.id) return false;
+  state.user = snap.user; state.household = snap.household;
+  state.members = snap.members || []; state.pending = snap.pending || [];
+  state.data = Object.fromEntries(TABLES.map((t) => [t, snap.data?.[t] || []]));
+  await loadOutbox();
+  applyOutbox();
+  state.loaded = true;
+  return true;
+}
+export async function clearOffline() { // dipanggil saat keluar akun
+  clearTimeout(saveTimer); outbox = []; outboxUid = null;
+  try { await idbDel("snapshot"); await idbDel("outbox"); } catch { /* abaikan */ }
+}
+
 export async function loadAll() {
+  if (outbox.length) {
+    await flushOutbox();
+    if (outbox.length) throw new Error("Failed to fetch"); // koneksi belum pulih: pertahankan data lokal
+  }
   const fresh = Object.fromEntries(TABLES.map((t) => [t, []]));
   let cursor = null;
   for (;;) {
@@ -189,13 +314,41 @@ export async function loadAll() {
 }
 export const loadTable = loadAll; // satu tabel fisik: muat ulang semuanya
 
+function localInsert(table, values) {
+  const id = "tmp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  state.data[table].push({ ...values, id, created_at: new Date().toISOString(), household_id: state.household?.id });
+  sortRows(table); emit(table);
+  return enqueue({ op: "insert", table, id, values: { ...values } });
+}
+
 export async function insertRow(table, values) {
-  const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(values) }, permissions: perms() });
-  upsert(table, row);
+  encode(values); // validasi ukuran lebih dulu
+  const queued = shouldQueue();
+  if (!queued) {
+    try {
+      const row = await tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(values) }, permissions: perms() });
+      upsert(table, row); return;
+    } catch (e) { if (!isNetworkError(e)) throw e; }
+  }
+  await localInsert(table, values);
+  if (queued) kick();
 }
 export async function insertMany(table, rows) {
-  const created = await Promise.all(rows.map((v) => tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(v) }, permissions: perms() })));
-  created.forEach((r) => upsert(table, r));
+  rows.forEach(encode);
+  const queued = shouldQueue();
+  if (!queued) {
+    const res = await Promise.allSettled(rows.map((v) => tablesDB.createRow({ databaseId: DB, tableId: TBL, rowId: ID.unique(), data: { kind: table, data: encode(v) }, permissions: perms() })));
+    let hard = null;
+    for (let i = 0; i < res.length; i++) {
+      if (res[i].status === "fulfilled") upsert(table, res[i].value);
+      else if (isNetworkError(res[i].reason)) await localInsert(table, rows[i]);
+      else hard = hard || res[i].reason;
+    }
+    if (hard) throw hard;
+    return;
+  }
+  for (const v of rows) await localInsert(table, v);
+  kick();
 }
 export async function updateRow(table, id, patch) {
   const list = state.data[table];
@@ -204,16 +357,26 @@ export async function updateRow(table, id, patch) {
   const before = list[i], next = { ...before, ...patch };
   const json = encode(next);              // validasi ukuran sebelum optimistis
   list[i] = next; emit(table);            // UI terasa instan
-  try { await tablesDB.updateRow({ databaseId: DB, tableId: TBL, rowId: id, data: { data: json } }); }
-  catch (e) { list[i] = before; emit(table); throw e; }
+  const queued = shouldQueue() || isTmp(id);
+  if (!queued) {
+    try { await tablesDB.updateRow({ databaseId: DB, tableId: TBL, rowId: id, data: { data: json } }); return; }
+    catch (e) { if (!isNetworkError(e)) { list[i] = before; emit(table); throw e; } }
+  }
+  await enqueue({ op: "update", table, id, values: next });
+  if (queued) kick();
 }
 export async function deleteRow(table, id) {
-  await tablesDB.deleteRow({ databaseId: DB, tableId: TBL, rowId: id });
+  const queued = shouldQueue() || isTmp(id);
+  if (!queued) {
+    try { await tablesDB.deleteRow({ databaseId: DB, tableId: TBL, rowId: id }); remove(table, id); return; }
+    catch (e) { if (!isNetworkError(e)) throw e; }
+  }
   remove(table, id);
+  await enqueue({ op: "delete", table, id });
+  if (queued) kick();
 }
 export async function deleteMany(table, ids) {
-  await Promise.all(ids.map((id) => tablesDB.deleteRow({ databaseId: DB, tableId: TBL, rowId: id })));
-  ids.forEach((id) => remove(table, id));
+  await Promise.all(ids.map((id) => deleteRow(table, id)));
 }
 
 // Simpan nama & email saya ke data keluarga agar anggota lain bisa menampilkannya.
@@ -252,3 +415,8 @@ document.addEventListener("visibilitychange", () => {
     loadAll().catch(() => {}); loadMembers().catch(() => {});
   }
 });
+
+// Simpan salinan data setiap ada perubahan (ditunda sebentar agar tidak berulang-ulang)
+listeners.add(() => { clearTimeout(saveTimer); saveTimer = setTimeout(saveSnapshot, 600); });
+// Coba kirim ulang perubahan yang tertunda (mis. sinyal "online" tapi koneksi buruk)
+setInterval(() => { if (outbox.length && navigator.onLine && state.household) flushOutbox().catch(() => {}); }, 30000);

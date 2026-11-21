@@ -1,3 +1,4 @@
+import { isNetworkError, OFFLINE_MESSAGE } from "./offline.js";
 // Helper UI kecil tanpa framework. Semua teks dari pengguna dimasukkan via textContent (aman dari XSS).
 
 const PROP_KEYS = new Set(["value", "checked", "disabled", "selected", "hidden"]);
@@ -48,6 +49,7 @@ export function relDay(s) {
 let toastBox;
 export function toast(msg, kind = "") {
   if (!toastBox) { toastBox = h("div", { class: "toasts", role: "status", "aria-live": "polite" }); document.body.append(toastBox); }
+  if (kind === "err" && isNetworkError(msg)) msg = OFFLINE_MESSAGE; // "Failed to fetch" → pesan yang bisa dimengerti
   const t = h("div", { class: "toast " + kind }, msg);
   toastBox.append(t);
   setTimeout(() => t.remove(), kind === "err" ? 5000 : 2600);
