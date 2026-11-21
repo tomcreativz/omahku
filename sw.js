@@ -1,6 +1,6 @@
 // Service worker: cangkang aplikasi tersedia offline. Data tetap diambil dari Appwrite (butuh internet).
 // Naikkan VERSION setiap kali Anda mengubah file aplikasi agar cache lama dibuang.
-const VERSION = "v13";
+const VERSION = "v14";
 const CACHE = "omahku-" + VERSION;
 const SHELL = [
   "./", "index.html", "manifest.webmanifest",

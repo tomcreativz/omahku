@@ -230,6 +230,7 @@ Aplikasi akan punya ikon sendiri dan terbuka layar penuh. Tampilannya tersedia o
 | Undangan tidak sampai | Cek folder spam. Pastikan email benar. Batalkan lalu kirim ulang. Pastikan hostname situs terdaftar |
 | "URL host must be either localhost or a registered platform" | Platform untuk alamat situs yang sedang dipakai belum ditambahkan |
 | Pasangan melihat halaman "Buat rumah" | Ia mendaftar sendiri tanpa membuka tautan undangan. Minta ia keluar, lalu kirim undangan ke email yang ia pakai mendaftar dan klik tautannya |
+| Nama pasangan tampil "Anggota" | Appwrite menyembunyikan nama anggota lain. Omahku mengatasinya dengan menyimpan nama tiap anggota di data keluarga, tetapi nama baru muncul **setelah pasangan membuka aplikasi versi terbaru satu kali**. Anda juga bisa mengaktifkan *User name* dan *User email* di Auth → Settings → Memberships privacy |
 | "Password minimal 8 karakter" | Aturan Appwrite |
 | Berhenti sinkron | Tutup dan buka lagi aplikasi (otomatis memuat ulang). Pastikan proyek tidak ter-pause |
 | "Catatan terlalu panjang" | Satu catatan maksimal ± 15.000 karakter; pecah menjadi beberapa catatan |
