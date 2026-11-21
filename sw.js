@@ -1,6 +1,6 @@
 // Service worker: cangkang aplikasi tersedia offline. Data offline disimpan di perangkat oleh js/offline.js + js/data.js.
 // Naikkan VERSION setiap kali Anda mengubah file aplikasi agar cache lama dibuang.
-const VERSION = "v15";
+const VERSION = "v16";
 const CACHE = "omahku-" + VERSION;
 const SHELL = [
   "./", "index.html", "manifest.webmanifest",
