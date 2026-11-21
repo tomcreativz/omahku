@@ -43,12 +43,24 @@ export const isOwner = () => !!meMember() && meMember().role === "owner";
 
 // Nama anggota: pakai data Appwrite bila tersedia; bila disembunyikan, pakai profil yang disimpan anggota itu sendiri.
 const emailName = (e) => String(e || "").split("@")[0];
+// Gabungkan semua catatan profil milik satu anggota (jaga-jaga bila ada lebih dari satu): nilai terakhir yang terisi menang.
+function profileOf(userId) {
+  const out = { name: "", email: "", alias: "" };
+  for (const p of state.data.member_profiles || []) {
+    if (p.user_id !== userId) continue;
+    if (p.name) out.name = p.name;
+    if (p.email) out.email = p.email;
+    if (p.alias) out.alias = p.alias;
+  }
+  return out;
+}
 function refreshNames() {
-  const profiles = state.data.member_profiles || [];
   for (const m of [...state.members, ...state.pending]) {
-    const p = profiles.find((x) => x.user_id === m.user_id);
-    m.display_name = m.api_name || p?.name || emailName(m.api_email) || emailName(p?.email) || "Anggota";
-    m.email = m.api_email || p?.email || "";
+    const p = profileOf(m.user_id);
+    const alias = m.user_id === state.user?.id ? "" : p.alias; // nama panggilan dari anggota lain; diri sendiri memakai namanya sendiri
+    m.display_name = alias || m.api_name || p.name || emailName(m.api_email) || emailName(p.email) || "Anggota";
+    m.email = m.api_email || p.email || "";
+    m.name_known = !!(alias || m.api_name || p.name || m.api_email || p.email);
   }
 }
 
@@ -317,7 +329,7 @@ export const loadTable = loadAll; // satu tabel fisik: muat ulang semuanya
 function localInsert(table, values) {
   const id = "tmp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   state.data[table].push({ ...values, id, created_at: new Date().toISOString(), household_id: state.household?.id });
-  sortRows(table); emit(table);
+  sortRows(table); if (table === "member_profiles") refreshNames(); emit(table);
   return enqueue({ op: "insert", table, id, values: { ...values } });
 }
 
@@ -356,7 +368,7 @@ export async function updateRow(table, id, patch) {
   if (i < 0) throw new Error("Catatan tidak ditemukan.");
   const before = list[i], next = { ...before, ...patch };
   const json = encode(next);              // validasi ukuran sebelum optimistis
-  list[i] = next; emit(table);            // UI terasa instan
+  list[i] = next; if (table === "member_profiles") refreshNames(); emit(table);            // UI terasa instan
   const queued = shouldQueue() || isTmp(id);
   if (!queued) {
     try { await tablesDB.updateRow({ databaseId: DB, tableId: TBL, rowId: id, data: { data: json } }); return; }
@@ -377,6 +389,14 @@ export async function deleteRow(table, id) {
 }
 export async function deleteMany(table, ids) {
   await Promise.all(ids.map((id) => deleteRow(table, id)));
+}
+
+// Beri nama panggilan untuk anggota lain (tampil di kedua perangkat). Kosong = hapus nama panggilan.
+export async function setMemberAlias(userId, alias) {
+  const clean = String(alias || "").trim().slice(0, 40);
+  const mine = (state.data.member_profiles || []).filter((p) => p.user_id === userId);
+  if (!mine.length) { if (clean) await insertRow("member_profiles", { user_id: userId, name: "", email: "", alias: clean }); return; }
+  for (const p of mine) if ((p.alias || "") !== (p.id === mine[0].id ? clean : "")) await updateRow("member_profiles", p.id, { alias: p.id === mine[0].id ? clean : "" });
 }
 
 // Simpan nama & email saya ke data keluarga agar anggota lain bisa menampilkannya.

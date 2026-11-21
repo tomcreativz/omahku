@@ -1,7 +1,7 @@
 // Halaman Beranda, Pengaturan, dan menu "Lainnya".
 import { CONFIG } from "./config.js";
-import { h, chip, toast, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, relDay } from "./ui.js";
-import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers } from "./data.js";
+import { h, chip, toast, modal, copyText, today, daysBetween, fmtDate, fmtShort, hhmm, relDay } from "./ui.js";
+import { state, meMember, memberName, updateRow, TABLES, isOwner, renameHousehold, renameMe, inviteMember, cancelInvite, setPassword, loadMembers, loadAll, setMemberAlias } from "./data.js";
 import { MODULES, modByKey, run, openForm, addToShopping, nextDue, progressOf } from "./modules.js";
 import { assetAlerts, serviceAlerts } from "./assets.js";
 import { isLocked, lockSettings } from "./lock.js";
@@ -145,8 +145,27 @@ export function renderSettings(root, { logout, onRenamed }) {
   const total = state.members.length + state.pending.length;
   const full = total >= hh.max_members;
 
+  // Beri nama panggilan untuk anggota lain
+  function renameMember(m) {
+    const input = h("input", { type: "text", value: m.name_known ? m.display_name : "", maxlength: 40, placeholder: "Contoh: Sari", "aria-label": "Nama anggota" });
+    const save = (val) => run(async () => { await setMemberAlias(m.user_id, val); close(); schedule(); }, "Tersimpan ✓");
+    const close = modal("Nama untuk anggota ini", h("div", null,
+      h("div", { class: "field" }, h("label", null, "Nama yang ditampilkan"), input),
+      h("div", { class: "foot" },
+        h("button", { class: "btn white", type: "button", onclick: () => save("") }, "Kembalikan"),
+        h("button", { class: "btn yellow", type: "button", onclick: () => save(input.value.trim()) }, "Simpan"))));
+  }
+  const memberRow = (m) => {
+    const self = m.user_id === state.user.id;
+    const sub = m.email || (!self && !m.name_known ? "Nama belum tersedia — ketuk ✏️ untuk memberi nama" : m.role === "owner" ? "Pembuat rumah" : "Anggota");
+    const badge = chip(m.role === "owner" ? "👑" : "👤", "lilac");
+    const right = self ? badge : h("span", { style: { display: "inline-flex", gap: ".4rem", alignItems: "center" } }, badge,
+      h("button", { class: "btn sm white icon-btn", type: "button", "aria-label": "Ubah nama anggota", onclick: () => renameMember(m) }, "✏️"));
+    return li(m.display_name + (self ? " (kamu)" : ""), sub, right);
+  };
+
   const members = h("div", { style: { display: "flex", flexDirection: "column", gap: ".5rem" } },
-    state.members.map((m) => li(m.display_name + (m.user_id === state.user.id ? " (kamu)" : ""), m.email || (m.role === "owner" ? "Pembuat rumah" : "Anggota"), chip(m.role === "owner" ? "👑" : "👤", "lilac"))),
+    state.members.map(memberRow),
     state.pending.map((m) => li(m.email || m.display_name, "Undangan terkirim — menunggu diterima", owner
       ? h("button", { class: "btn sm white", type: "button", onclick: () => run(async () => { await cancelInvite(m.membership_id); schedule(); }, "Undangan dibatalkan") }, "Batalkan")
       : chip("⏳ Menunggu", "yellow"))));
@@ -182,7 +201,7 @@ export function renderSettings(root, { logout, onRenamed }) {
           : h("div", { class: "note" }, "Hanya pembuat rumah yang dapat mengundang anggota.")),
 
       h("section", { class: "box card" }, h("h3", null, "👨‍👩‍👧 Anggota"), members,
-        h("button", { class: "btn sm white", type: "button", onclick: () => run(async () => { await loadMembers(); schedule(); }, "Diperbarui") }, "🔄 Segarkan"),
+        h("button", { class: "btn sm white", type: "button", onclick: () => run(async () => { await loadAll(); await loadMembers(); schedule(); }, "Diperbarui") }, "🔄 Segarkan"),
         h("div", { class: "field", style: { marginTop: ".6rem" } }, h("label", null, "Nama panggilanmu"), myName),
         h("button", { class: "btn yellow", type: "button", onclick: () => run(async () => {
           const v = myName.value.trim(); if (!v) throw new Error("Nama tidak boleh kosong.");
