@@ -13,12 +13,28 @@ import { ageLabel } from "./vaxcalc.js";
 import { getPref, setPref } from "./theme.js";
 
 const link = (to, text, cls = "btn sm white") => h("a", { class: cls, href: "#/" + to }, text);
-const panel = (title, color, to, ...body) =>
-  h("section", { class: "box panel" },
-    h("h3", { style: { background: `var(--${color})` } }, h("span", null, title), to ? link(to, "Lihat ›", "btn sm white more") : null),
+// Kartu dashboard: lencana ikon berwarna + judul; header netral agar layar tidak ramai.
+const panel = (title, color, to, ...body) => {
+  const i = title.indexOf(" ");
+  return h("section", { class: "box dpanel" },
+    h("h3", null,
+      h("span", { class: "ttl" }, h("span", { class: "ico", style: `--c:var(--${color})`, "aria-hidden": "true" }, title.slice(0, i)), h("span", null, title.slice(i + 1))),
+      to ? link(to, "Lihat ›", "btn sm white more") : null),
     h("div", { class: "body" }, ...body));
+};
+// Kartu pengingat: ada lencana jumlah di judul
+const alertPanel = (title, color, to, count, ...body) => {
+  const el = panel(title, color, to, ...body);
+  el.querySelector(".ttl").append(h("span", { class: "count" }, String(count)));
+  return el;
+};
+// Satu bagian dashboard: judul kecil + grid kartu berukuran rata
+const section = (title, note, ...cards) => {
+  const kids = cards.flat().filter(Boolean);
+  return kids.length ? h("section", { class: "dash-sec" }, h("div", { class: "sec-head" }, h("h2", null, title), note ? h("span", null, note) : null), h("div", { class: "dash-grid" }, ...kids)) : null;
+};
 const lockedNote = () => h("div", { class: "note", style: { fontWeight: 700 } }, "🔒 Terkunci. Buka menunya dan masukkan PIN untuk melihat.");
-const none = (t) => h("div", { class: "note", style: { fontWeight: 700, color: "var(--muted)" } }, t);
+const none = (t) => h("div", { class: "note", style: { fontWeight: 500, color: "var(--muted)" } }, t);
 const li = (main, sub, right) => h("div", { class: "li" }, h("div", { class: "grow" }, main, sub ? h("small", null, sub) : null), right || null);
 
 // ============================================================
@@ -40,14 +56,51 @@ export function renderDashboard(root) {
   const followups = D.health_records.filter((r) => r.followup_date && daysBetween(t, r.followup_date) <= 30).sort((a, b) => a.followup_date.localeCompare(b.followup_date));
   const shopping = D.shopping_items.filter((r) => !r.done);
   const primary = D.contacts.filter((r) => r.is_primary);
+  const lockedAssets = isLocked("assets"), lockedHealth = isLocked("health");
+  const svcShown = lockedAssets ? [] : svcAl; // data aset/kesehatan yang dikunci PIN tidak boleh bocor ke dashboard
 
   const hour = new Date().getHours();
   const greet = hour < 11 ? "Selamat pagi" : hour < 15 ? "Selamat siang" : hour < 18 ? "Selamat sore" : "Selamat malam";
 
+  // ----- Pantauan: pengingat jatuh tempo. Hanya yang berisi tampil sebagai kartu; sisanya diringkas di "Aman terkendali". -----
+  const watch = [
+    { icon: "⏰", name: "Cek kedaluwarsa", color: "red", to: "stock", count: expiring.length,
+      rows: () => expiring.slice(0, 6).map((r) => { const n = daysBetween(t, r.expiry_date); return li(r.name, `${fmtDate(r.expiry_date)}${r.qty != null ? " · sisa " + Number(r.qty) + (r.unit ? " " + r.unit : "") : ""}`, chip(n < 0 ? `Lewat ${-n} hari` : relDay(r.expiry_date), n < 0 ? "red" : n <= 3 ? "red" : "orange")); }),
+      ok: D.stock_items.some((r) => r.expiry_date) ? "Aman 14 hari ke depan" : "Isi tanggal kedaluwarsa di Stok" },
+    { icon: "🏍️", name: "Pajak & dokumen", color: "blue", to: "assets", locked: lockedAssets, count: alerts.length + docAl.length,
+      rows: () => [...alerts.slice(0, 4).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone))),
+                   ...docAl.slice(0, 4).map(({ d, st }) => li(`📄 ${d.name}${d.person ? " · " + d.person : ""}`, `Berlaku sampai ${fmtDate(d.expiry_date)}`, chip(st.text, st.tone)))],
+      ok: D.assets.length || D.documents.length ? "Tidak ada yang jatuh tempo" : "Catat motor, mobil, dan dokumen penting" },
+    { icon: "🛠️", name: "Perawatan segera", color: "orange", to: "maintenance", count: maint.length + svcShown.length,
+      rows: () => [...svcShown.slice(0, 3).map(({ a, r }) => li(`🔧 Servis ${a.name}${a.plate ? " · " + a.plate : ""}`, r.date ? fmtDate(r.date) : "Berdasarkan kilometer", chip(r.text, r.tone))),
+                   ...maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange")))],
+      ok: "Tidak ada dalam 14 hari" },
+    { icon: "💉", name: "Imunisasi anak", color: "pink", to: "health", locked: lockedHealth, count: vax.length,
+      rows: () => vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone))),
+      ok: D.health_profiles.some((p) => p.birth_date) ? "Tidak ada yang perlu dikejar" : "Isi tanggal lahir anak di Profil Kesehatan" },
+    { icon: "🩺", name: "Kontrol kesehatan", color: "pink", to: "health", locked: lockedHealth, count: followups.length,
+      rows: () => followups.slice(0, 5).map((r) => li(`${r.person}: ${r.title}`, fmtDate(r.followup_date), chip(relDay(r.followup_date), daysBetween(t, r.followup_date) < 0 ? "red" : "orange"))),
+      ok: "Tidak ada jadwal dalam 30 hari" },
+  ];
+  const live = watch.filter((w) => !w.locked && w.count > 0);
+  const quiet = watch.filter((w) => !live.includes(w));
+  const attention = overdueAgenda.length + live.reduce((s, w) => s + w.count, 0);
+  const okItem = (w) => h("a", { class: "ok-item", href: "#/" + w.to },
+    h("span", { class: "ico", style: `--c:var(--${w.color})`, "aria-hidden": "true" }, w.icon),
+    h("span", { class: "grow" }, h("b", null, w.name), h("small", null, w.locked ? "🔒 Terkunci — ketuk untuk membuka" : w.ok)));
+  const okCard = quiet.length ? h("section", { class: "box dpanel ok-card" },
+    h("h3", null, h("span", { class: "ttl" }, h("span", { class: "ico", style: "--c:var(--green)", "aria-hidden": "true" }, "✅"), h("span", null, "Aman terkendali"))),
+    h("div", { class: "body" }, h("div", { class: "ok-grid" }, quiet.map(okItem)))) : null;
+
   root.append(
     h("section", { class: "box hello" },
-      h("div", null, h("h1", null, `${greet}, ${me?.display_name || ""}! 👋`), h("p", null, `${fmtDate(t)} · ${state.household.name}`)),
-      h("div", { style: { display: "flex", gap: ".6rem", flexWrap: "wrap" } },
+      h("div", null,
+        h("h1", null, `${greet}, ${me?.display_name || ""}! 👋`),
+        h("p", null, `${fmtDate(t)} · ${state.household.name}`),
+        h("div", { class: "pills" },
+          attention ? chip(`⚠️ ${attention} hal perlu perhatian`, "orange") : chip("✅ Semua aman hari ini", "green"),
+          chip(`📅 ${agendaToday.length} agenda hari ini`, "blue"))),
+      h("div", { class: "actions" },
         h("button", { class: "btn blue", type: "button", onclick: () => openForm(modByKey.agenda) }, "＋ Agenda"),
         h("button", { class: "btn green", type: "button", onclick: () => openForm(modByKey.tasks) }, "＋ Tugas"))),
 
@@ -55,10 +108,10 @@ export function renderDashboard(root) {
       stat("📅", agendaToday.length, "Agenda hari ini", "agenda", "blue"),
       stat("✅", tasksOpen.length, "Tugas terbuka", "tasks", "green"),
       stat("🛒", shopping.length, "Perlu dibeli", "shopping", "orange"),
-      stat("📦", low.length, "Stok menipis", "stock", low.length ? "red" : "lilac"),
+      stat("📦", low.length, "Stok menipis", "stock", low.length ? "red" : "lilac", low.length > 0),
       stat("🎯", goals.length, "Target berjalan", "goals", "yellow")),
 
-    h("div", { class: "dash" },
+    section("Ringkasan hari ini", null,
       panel("📅 Hari ini & akan datang", "blue", "agenda",
         overdueAgenda.length ? h("div", { class: "chip red", style: { alignSelf: "flex-start" } }, `${overdueAgenda.length} agenda terlewat`) : null,
         agendaToday.length ? agendaToday.map((r) => li(r.title, [r.time ? hhmm(r.time) : "Sepanjang hari", memberName(r.assignee)].filter(Boolean).join(" · "),
@@ -73,26 +126,17 @@ export function renderDashboard(root) {
       panel("🛒 Belanja & stok", "orange", "shopping",
         shopping.length ? shopping.slice(0, 5).map((r) => li(r.name, r.qty)) : none("Daftar belanja kosong."),
         low.length ? [h("small", { style: { fontWeight: 700 } }, "Stok menipis"), h("div", { class: "meta", style: { display: "flex", flexWrap: "wrap", gap: ".4rem" } }, low.slice(0, 8).map((r) => chip(`${r.name} (${Number(r.qty)})`, "red"))),
-          h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(low.map((r) => ({ name: r.name }))) }, "🛒 Masukkan semua ke belanja")] : null),
+          h("button", { class: "btn sm orange", type: "button", onclick: () => addToShopping(low.map((r) => ({ name: r.name }))) }, "🛒 Masukkan semua ke belanja")] : null)),
 
-      panel("⏰ Cek kedaluwarsa", "red", "stock",
-        expiring.length ? expiring.slice(0, 6).map((r) => { const n = daysBetween(t, r.expiry_date); return li(r.name, `${fmtDate(r.expiry_date)}${r.qty != null ? " · sisa " + Number(r.qty) + (r.unit ? " " + r.unit : "") : ""}`, chip(n < 0 ? `Lewat ${-n} hari` : relDay(r.expiry_date), n < 0 ? "red" : n <= 3 ? "red" : "orange")); })
-          : none(D.stock_items.some((r) => r.expiry_date) ? "Tidak ada yang kedaluwarsa dalam 14 hari. 👍" : "Isi tanggal kedaluwarsa di Stok agar tidak ada makanan yang terlewat.")),
+    section("Pantauan", attention ? `${attention} perlu perhatian` : "Semua aman",
+      live.map((w) => alertPanel(`${w.icon} ${w.name}`, w.color, w.to, w.count, ...w.rows())),
+      okCard),
 
-      panel("🏍️ Pajak & dokumen", "blue", "assets",
-        isLocked("assets") ? lockedNote() : (alerts.length || docAl.length)
-          ? [...alerts.slice(0, 4).map(({ a, r }) => li(`${a.name}${a.plate ? " · " + a.plate : ""}`, `${r.label}${r.date ? " · " + fmtDate(r.date) : ""}`, chip(r.text, r.tone))),
-             ...docAl.slice(0, 4).map(({ d, st }) => li(`📄 ${d.name}${d.person ? " · " + d.person : ""}`, `Berlaku sampai ${fmtDate(d.expiry_date)}`, chip(st.text, st.tone)))]
-          : none(D.assets.length || D.documents.length ? "Tidak ada pajak atau dokumen yang jatuh tempo. 👍" : "Catat motor, mobil, dan dokumen penting agar pajak dan masa berlakunya tidak terlewat.")),
-
-      panel("💉 Imunisasi anak", "pink", "health",
-        isLocked("health") ? lockedNote() : vax.length ? vax.slice(0, 6).map(({ p, v }) => li(`${p.person}: ${v.name}`, `Dianjurkan usia ${ageLabel(v.at)}`, chip(v.st.label, v.st.tone)))
-          : none(D.health_profiles.some((p) => p.birth_date) ? "Tidak ada imunisasi yang perlu dikejar sekarang. 👍" : "Isi tanggal lahir anak di Profil Kesehatan untuk jadwal imunisasi.")),
-
-      panel("🛠️ Perawatan segera", "orange", "maintenance",
-        maint.length || svcAl.length ? [
-          ...svcAl.slice(0, 3).map(({ a, r }) => li(`🔧 Servis ${a.name}${a.plate ? " · " + a.plate : ""}`, r.date ? fmtDate(r.date) : "Berdasarkan kilometer", chip(r.text, r.tone))),
-          ...maint.slice(0, 5).map(({ r, n }) => li(r.title, `${fmtDate(n)}`, chip(daysBetween(t, n) < 0 ? `Terlambat ${-daysBetween(t, n)}h` : relDay(n), daysBetween(t, n) < 0 ? "red" : "orange")))] : none("Belum ada perawatan atau servis yang jatuh tempo dalam 14 hari.")),
+    section("Rumah & keluarga", null,
+      panel("🎯 Target keluarga", "yellow", "goals",
+        goals.length ? goals.map((g) => h("div", { class: "li", style: { flexDirection: "column", alignItems: "stretch" } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", gap: ".5rem" } }, h("b", null, g.title), h("b", null, progressOf(g) + "%")),
+          h("div", { class: "bar" }, h("i", { style: { width: progressOf(g) + "%" } })))) : none("Belum ada target. Mulai dari satu impian kecil! ✨")),
 
       panel("👕 Lemari pakaian", "blue", "clothes",
         (() => {
@@ -104,21 +148,15 @@ export function renderDashboard(root) {
           });
         })()),
 
-      panel("🎯 Target keluarga", "yellow", "goals",
-        goals.length ? goals.map((g) => h("div", { class: "li", style: { flexDirection: "column", alignItems: "stretch" } },
-          h("div", { style: { display: "flex", justifyContent: "space-between", gap: ".5rem" } }, h("b", null, g.title), h("b", null, progressOf(g) + "%")),
-          h("div", { class: "bar" }, h("i", { style: { width: progressOf(g) + "%" } })))) : none("Belum ada target. Mulai dari satu impian kecil! ✨")),
-
-      panel("🩺 Kontrol kesehatan", "pink", "health",
-        followups.length ? followups.slice(0, 5).map((r) => li(`${r.person}: ${r.title}`, fmtDate(r.followup_date), chip(relDay(r.followup_date), daysBetween(t, r.followup_date) < 0 ? "red" : "orange"))) : none("Tidak ada jadwal kontrol dalam 30 hari.")),
-
       panel("🚨 Kontak darurat", "red", "contacts",
         primary.length ? primary.slice(0, 4).map((r) => li(r.name, r.relation, h("a", { class: "btn sm green", href: "tel:" + (r.phone || "").replace(/\s/g, "") }, "📞 " + (r.phone || "")))) : none("Tandai kontak sebagai “utama” agar tampil di sini."),
-        h("a", { class: "btn red block", href: "tel:112" }, "📞 112 — Darurat umum"))));
+        h("a", { class: "btn red block sos-btn", href: "tel:112" }, "📞 112 — Darurat umum"))));
 }
 
-const stat = (icon, n, label, to, color) =>
-  h("a", { class: "box stat", href: "#/" + to, style: { background: `var(--${color})` } }, h("b", null, String(n)), h("span", null, `${icon} ${label}`));
+const stat = (icon, n, label, to, color, warn) =>
+  h("a", { class: "box stat" + (warn ? " warn" : ""), href: "#/" + to, style: `--c:var(--${color})` },
+    h("div", { class: "top" }, h("b", null, String(n)), h("span", { class: "ico", "aria-hidden": "true" }, icon)),
+    h("span", { class: "lb" }, label));
 
 function markTaskDone(r) { modByKey.tasks.card(r, { patch: (row, p, m) => run(() => updateRow("tasks", row.id, p), m) }).check.set(true); }
 
